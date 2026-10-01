@@ -1,0 +1,60 @@
+# Domain definition: the vocabulary this knowledge base is built on. Validate
+# with `kb sources --check`. Everything domain-specific lives here, in
+# sources.yaml, prompts/extract.md and eval/golden.yaml; the code is generic.
+#
+# The values below are a worked example (W3C web principles). Replace them when
+# starting a new domain.
+#
+# Changing modalities or topics changes the extraction prompt version, so the
+# next `kb extract` re-extracts every section (cached outputs go stale).
+
+# Shown to the agent as the MCP server instructions, prefixed with the name.
+name: Web principles knowledge base
+instructions: >-
+  Holds W3C guidance on what the web should be: the source texts split into
+  sections, and the statements extracted from them with verbatim quotes.
+
+# Allowed doc_type values in sources.yaml, most authoritative first. kb_topic
+# lists statements from earlier types first.
+doc_types: [standard, guidance, article]
+
+# Facet values. Each source lists the tags it covers; each statement lists the
+# subset it applies to (applies_to); kb_search and kb_topic filter on them.
+tags: [browsers, websites, standards]
+
+# Statement modalities, strongest first. The description is given to the model.
+modalities:
+  - id: must
+    description: an obligation the text states.
+  - id: must_not
+    description: a prohibition the text states.
+  - id: should
+    description: a recommendation or good practice.
+  - id: may
+    description: a permission, option, or one accepted way of meeting a goal.
+  - id: fact
+    description: a descriptive claim, principle or finding the text asserts, with no obligation attached.
+
+# Fixed topic taxonomy. Each statement gets one to three of these ids.
+topics:
+  - id: accessibility
+    label: Accessibility
+    description: Access for people with disabilities, and for all people regardless of device, language or location.
+  - id: privacy_security
+    label: Privacy and security
+    description: Protecting people's data, consent, tracking, and the security of users and systems.
+  - id: expression
+    label: Expression and information
+    description: Freedom of expression, verifiable information, healthy debate and protection from harassment.
+  - id: user_control
+    label: User control
+    description: People's control over their experience, data and software, including the choice of how content is consumed.
+  - id: interoperability
+    label: Interoperability
+    description: One web across browsers, operating systems and devices; open standards and compatibility.
+  - id: sustainability
+    label: Sustainability
+    description: Environmental impact, energy use and the lifespan of devices.
+  - id: governance
+    label: Governance and transparency
+    description: How the web and its standards are made, transparency of software, and accountability.

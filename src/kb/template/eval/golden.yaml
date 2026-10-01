@@ -1,0 +1,11 @@
+# Golden questions for `kb eval`; `setup <name>` runs them after each build
+# once at least one exists. Each expects one of the listed sections in the top
+# results; `source` and `section` are globs over source ids and section refs.
+# Choose the expected sections by reading the source text, never from a search
+# run. Optional `tags` filters the search as kb_search does.
+#
+# Example:
+#
+# - question: How long should a taper before a marathon last?
+#   expect:
+#     - {source: example-guide, section: "4.2"}

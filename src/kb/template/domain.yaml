@@ -1,0 +1,38 @@
+# Domain definition: the vocabulary this knowledge base is built on. Validate
+# with `kb sources --check`; `setup <name>` checks it before every build.
+#
+# Changing modalities or topics changes the extraction prompt version, so the
+# next build re-extracts every section (cached outputs go stale).
+
+# Shown to the agent as the MCP server instructions, prefixed with the name.
+name: <<NAME>>
+instructions: <<INSTRUCTIONS>>
+
+# Allowed doc_type values in sources.yaml, most authoritative first. kb_topic
+# lists statements from earlier types first.
+doc_types: [standard, review, study, guidance, article]
+
+# Facet values. Each source lists the tags it covers; each statement lists the
+# subset it applies to; kb_search and kb_topic filter on them. Replace with the
+# facet that matters in this domain (audience, level, distance, ...).
+tags: [general]
+
+# Statement modalities, strongest first. The description is given to the model.
+modalities:
+  - id: must
+    description: an obligation or hard rule the text states.
+  - id: must_not
+    description: a prohibition the text states.
+  - id: should
+    description: a recommendation or good practice.
+  - id: may
+    description: a permission, option, or one accepted way of reaching a goal.
+  - id: fact
+    description: a finding, measured effect or principle the text asserts, with no recommendation attached.
+
+# Fixed topic taxonomy. Each statement gets one to three of these ids. Replace
+# the placeholder with five to twenty topics that cover the domain.
+topics:
+  - id: general
+    label: General
+    description: Anything in this knowledge base; replace with a real topic taxonomy.

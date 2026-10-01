@@ -1,0 +1,4 @@
+#!/bin/sh
+# Create a knowledge base, or build and register an existing one: setup NAME [--dir DIR]
+# See `kb setup --help`. Runs from any directory; uv syncs the engine environment on first use.
+exec uv run --project "$(dirname "$0")" --quiet kb setup "$@"

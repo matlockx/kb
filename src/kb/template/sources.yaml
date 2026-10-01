@@ -1,0 +1,25 @@
+# Hand-curated source registry. Add at least one source, then run
+# `setup <name>` again to build the knowledge base.
+#
+# Fields: id (lowercase slug), publisher, title, url (https, HTML or PDF),
+# language (ISO 639-1), doc_type (one of domain.yaml doc_types), tags
+# (non-empty subset of domain.yaml tags).
+#
+# Optional parse settings, see `kb parse --help`:
+#   section_pattern, chapter_pattern  regexes with a (?P<ref>...) group
+#   body_start, body_end              regexes for the first body line and the first line after it
+#   section_label, chapter_label      re.Match.expand templates rewriting refs
+#   first_chapter                     ref prefix before chapter_pattern first matches
+#   skip_sections                     regex on refs that extraction skips (still searchable)
+# Patterns see HTML headings in Markdown form ("## 1. Introduction"). Without a
+# pattern, parse splits at HTML headings, else at PDF pages.
+#
+# Example:
+#
+# - id: example-guide
+#   publisher: Example Society
+#   title: Example Guide
+#   url: https://example.org/guide.html
+#   language: en
+#   doc_type: guidance
+#   tags: [general]
