@@ -1,0 +1,20 @@
+# Golden questions for `kb eval`. Each expects one of the listed sections in the
+# top results; `source` and `section` are globs over source ids and section
+# refs. Choose the expected sections by reading the source text, never from a
+# search run. Optional `tags` filters the search as kb_search does.
+#
+# The questions below belong to the worked example; replace them when starting
+# a new domain.
+
+- question: Should the web work for people with disabilities?
+  expect:
+    - {source: w3c-ethical-web-principles, section: "2.4"}
+- question: Energy consumption and device lifespan of web technologies
+  expect:
+    - {source: w3c-ethical-web-principles, section: "2.9"}
+- question: Can users choose how they consume content, for example with reader modes or assistive tools?
+  expect:
+    - {source: w3c-ethical-web-principles, section: "2.12"}
+- question: Must web content work in every browser and on every operating system?
+  expect:
+    - {source: w3c-ethical-web-principles, section: "2.11"}

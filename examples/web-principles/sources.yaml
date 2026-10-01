@@ -1,0 +1,27 @@
+# Hand-curated source registry. Validate with `kb sources --check`.
+#
+# Fields: id (lowercase slug), publisher, title, url (https), language
+# (ISO 639-1), doc_type (one of domain.yaml doc_types), tags (non-empty subset
+# of domain.yaml tags).
+#
+# Optional parse settings, see `kb parse --help`:
+#   section_pattern, chapter_pattern  regexes with a (?P<ref>...) group
+#   body_start, body_end              regexes for the first body line and the first line after it
+#   section_label, chapter_label      re.Match.expand templates rewriting refs
+#   first_chapter                     ref prefix before chapter_pattern first matches
+#   skip_sections                     regex on refs that extraction skips (still searchable)
+# Patterns see HTML headings in Markdown form ("## 1. Introduction"). Without a
+# pattern, parse splits at HTML headings, else at PDF pages.
+#
+# The entry below is a worked example; replace it when starting a new domain.
+
+- id: w3c-ethical-web-principles
+  publisher: W3C Technical Architecture Group
+  title: Ethical Web Principles
+  url: https://www.w3.org/TR/ethical-web-principles/
+  language: en
+  doc_type: guidance
+  tags: [browsers, websites, standards]
+  section_pattern: '^#{2,3} (?P<ref>\d+(?:\.\d+)*)\.? '
+  body_start: '^## 1\. Introduction'
+  body_end: '^## A\. '

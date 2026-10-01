@@ -1,0 +1,36 @@
+[project]
+name = "kb"
+version = "0.1.0"
+description = "Cited, versioned knowledge base template for coding agents: fetch, parse, extract, search over MCP"
+requires-python = ">=3.12"
+dependencies = [
+    "fonttools>=4.66.0",
+    "mcp>=2.2.0",
+    "pypdf>=6.19.0",
+    "pyyaml>=6",
+    "sentence-transformers>=6.1.0",
+    "truststore>=0.10.4",
+]
+
+[project.scripts]
+kb = "kb.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "S", "B", "A", "C4", "DTZ", "T20", "SIM", "ARG", "PTH", "ERA", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/kb/cli.py" = ["T201"]
+"src/kb/evaluate.py" = ["T201"]
+"src/kb/setup.py" = ["T201"]
+"tests/*" = ["S101"]
