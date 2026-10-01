@@ -2,6 +2,8 @@
 name = "kb"
 version = "0.1.0"
 description = "Cited, versioned knowledge base template for coding agents: fetch, parse, extract, search over MCP"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "fonttools>=4.66.0",
