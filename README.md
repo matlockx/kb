@@ -286,3 +286,7 @@ COPY (SELECT * FROM k.statements) TO 'statements.parquet' (FORMAT parquet);
 
 For Postgres, copy the plain tables through DuckDB's postgres extension and
 rebuild the indexes there with `tsvector` and pgvector.
+
+## Licence
+
+MIT; see [`LICENSE`](LICENSE).
