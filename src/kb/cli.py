@@ -10,6 +10,7 @@ from pathlib import Path
 from kb import db, domain, evaluate, fetch, index, parse, setup, sources, statements
 
 DOWNLOADS = Path("downloads")
+INGEST_SCRIPT = "ingest.sh"  # written into the downloads folder, beside the per-source folders
 
 
 def _regex(value: str) -> str:
@@ -52,7 +53,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Download every source (or those given with --source) into the raw directory. "
         "Content with a new hash is recorded as a new version; old versions are never overwritten. "
         "A file saved by hand into DOWNLOADS/<source id>/ is stored instead of downloading the URL and is then "
-        "removed from there; failed sources are listed with their links and folders for that. "
+        "removed from there; failed sources are listed with their links and folders for that, and "
+        "DOWNLOADS/ingest.sh is written to store and ingest them once saved. "
         "Exits 1 if any download failed.",
     )
     cmd.add_argument("--source", action="append", metavar="ID", help="fetch only this source (repeatable)")
@@ -219,39 +221,69 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def report_manual(failed: list[sources.Source], args: argparse.Namespace) -> None:
-    """List the sources to download in a browser with the folder to save each into (created here), and the
-    command that stores and ingests them, with the options of this run that differ from the defaults."""
+    """List the sources to download in a browser with the folder to save each into (created here), and write
+    the script that stores and ingests them, with the options of this run that differ from the defaults."""
     downloads = args.downloads
     for source in failed:
         (downloads / source.id).mkdir(parents=True, exist_ok=True)
     folders = [f"{downloads.resolve() / s.id}/" for s in failed]
     width = max(len("save into"), *map(len, folders))
+    table = [f"{'#':>3}  {'save into':<{width}}  link"]
+    table += [
+        f"{n:>3}  {folder:<{width}}  {s.url}" for n, (s, folder) in enumerate(zip(failed, folders, strict=True), 1)
+    ]
     print(f"\nDownload {len(failed)} by hand: open each link in a browser and save the PDF, or the page as HTML,")
     print("into the folder on its line (one file per folder; the file name does not matter):\n")
-    print(f"  {'#':>3}  {'save into':<{width}}  link")
-    for number, (source, folder) in enumerate(zip(failed, folders, strict=True), start=1):
-        print(f"  {number:>3}  {folder:<{width}}  {source.url}")
-    kb = " ".join(
-        [
-            "kb",
-            "-C",
-            shlex.quote(str(Path.cwd())),
-            *_changed("--db", args.db, db.DEFAULT_PATH),
-            *_changed("--domain", args.domain, Path("domain.yaml")),
-        ]
-    )
+    print("\n".join(f"  {line}" for line in table))
+    script = downloads.resolve() / INGEST_SCRIPT
+    fetch.write_atomic(script, ingest_script(failed, args, table).encode())  # atomic: the script may be running
+    script.chmod(0o755)
+    print("\nThen run this script; it stores the saved files (removing them from their folders) and ingests them:")
+    print(f"\n  {shlex.quote(str(script))}\n")
+    print("A source still without a file is tried online again; if that fails, it is listed again and the")
+    print("script rewritten. The script removes itself once every step succeeded.")
+
+
+def ingest_script(failed: list[sources.Source], args: argparse.Namespace, table: list[str]) -> str:
+    """A POSIX shell script running fetch, parse and extract for the failed sources, then index; every step runs
+    even when an earlier one failed, and the script exits 1 if any did."""
+    kb = [
+        "uv",
+        "run",
+        "--project",
+        shlex.quote(str(setup.ENGINE)),
+        "--quiet",
+        "kb",
+        "-C",
+        shlex.quote(str(Path.cwd())),
+        *_changed("--db", args.db, db.DEFAULT_PATH),
+        *_changed("--domain", args.domain, Path("domain.yaml")),
+    ]
     registry = _changed("--file", args.file, Path("sources.yaml"))
     raw = _changed("--raw", args.raw, Path("raw"))
     only = [f"--source {s.id}" for s in failed]
     steps = [
-        ["fetch", *registry, *raw, *_changed("--downloads", downloads, DOWNLOADS), *only],
+        ["fetch", *registry, *raw, *_changed("--downloads", args.downloads, DOWNLOADS), *only],
         ["parse", *registry, *raw, *only],
         ["extract", *registry, *only],
         ["index"],
     ]
-    print("\nThen store and ingest them; each file is removed from its folder once stored, and a source")
-    print("without a file is tried online again and listed here again:\n")
-    print("  " + "; ".join(f"{kb} {' '.join(step)}" for step in steps))
+    return "\n".join(
+        [
+            "#!/bin/sh",
+            "# Written by `kb fetch` for the sources it could not download. Save each file into the folder",
+            "# on its line, then run this script to store and ingest them:",
+            "#",
+            *(f"# {line}" for line in table),
+            "",
+            f'kb() {{ {" ".join(kb)} "$@"; }}',
+            "status=0",
+            *(f"kb {' '.join(step)} || status=1" for step in steps),
+            'if [ "$status" -eq 0 ]; then rm -f -- "$0"; fi',
+            'exit "$status"',
+            "",
+        ]
+    )
 
 
 def _changed(option: str, value: Path, default: Path) -> list[str]:

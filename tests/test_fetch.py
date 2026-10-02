@@ -196,13 +196,25 @@ def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
     assert "failed    gb-rts  HTTP 404" in out
     assert "1 new, 0 changed, 0 unchanged, 1 failed\n" in out
     assert f"  1  {inbox.resolve()}/gb-rts/  https://example.org/rts\n" in out  # the act downloaded: not listed
-    kb = f"kb -C {Path.cwd()} --db {(tmp_path / 'kb.db').resolve()} --domain {domain.resolve()}"
+    script = inbox.resolve() / "ingest.sh"
+    assert out.rstrip().endswith("The script removes itself once every step succeeded.")
+    assert f"\n  {script}\n" in out
+    assert script.stat().st_mode & 0o111  # executable
+    lines = script.read_text().splitlines()
+    assert lines[0] == "#!/bin/sh"
+    assert f"#   1  {inbox.resolve()}/gb-rts/  https://example.org/rts" in lines  # the table, for later reference
+    kb = f'--quiet kb -C {Path.cwd()} --db {(tmp_path / "kb.db").resolve()} --domain {domain.resolve()} "$@"; }}'
+    assert lines[lines.index("status=0") - 1].endswith(kb)
     file, raw = f"--file {registry.resolve()}", f"--raw {(tmp_path / 'raw').resolve()}"
-    assert out.rstrip().endswith(  # every option this run changed is carried over, so the steps hit the same files
-        f"  {kb} fetch {file} {raw} --downloads {inbox.resolve()} --source gb-rts; "
-        f"{kb} parse {file} {raw} --source gb-rts; {kb} extract {file} --source gb-rts; {kb} index"
-    )
-    assert [p.name for p in inbox.iterdir()] == ["gb-rts"]  # the folder to save into exists
+    assert lines[lines.index("status=0") + 1 :] == [  # every option this run changed is carried over
+        f"kb fetch {file} {raw} --downloads {inbox.resolve()} --source gb-rts || status=1",
+        f"kb parse {file} {raw} --source gb-rts || status=1",
+        f"kb extract {file} --source gb-rts || status=1",
+        "kb index || status=1",
+        'if [ "$status" -eq 0 ]; then rm -f -- "$0"; fi',
+        'exit "$status"',
+    ]
+    assert sorted(p.name for p in inbox.iterdir()) == ["gb-rts", "ingest.sh"]  # the folder to save into exists
 
     (inbox / "gb-rts" / "rts (1).pdf").write_bytes(b"%PDF-1.4 rts")
     assert main([*base, "--source", "gb-rts"]) == 0
