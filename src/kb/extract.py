@@ -108,7 +108,10 @@ class _HTMLBlocks(HTMLParser):
         if tag == "form":
             self.forms += 1
         page_form = tag == "form" and self.forms == self.page_form
-        skipping = self.skip_depth or (tag in SKIP_TAGS and not page_form) or hidden or "cookie" in classes
+        # A cookie banner is skipped by its class; <html> and <body> carry state classes such as
+        # "cookies-agreement-present" (Human Kinetics) and wrap the whole page.
+        banner = "cookie" in classes and tag not in {"html", "body"}
+        skipping = self.skip_depth or (tag in SKIP_TAGS and not page_form) or hidden or banner
         self.stack.append(tag)
         if skipping:
             self.skip_depth += 1
