@@ -54,10 +54,11 @@ def test_parse_fields_load(tmp_path: Path) -> None:
 
 
 def test_valid_entries_load(tmp_path: Path) -> None:
-    second = {**ORIGINAL, "id": "se-guide", "doc_type": "guidance", "tags": ["food"]}
+    second = {**ORIGINAL, "id": "se-guide", "doc_type": "guidance", "tags": ["food"], "skip_classes": ["Note"]}
     found = sources.load(write(tmp_path, [ORIGINAL, second]), DOMAIN)
     assert [s.id for s in found] == ["se-act", "se-guide"]
     assert found[0].tags == ("cosmetics", "food")
+    assert (found[0].skip_classes, found[1].skip_classes) == ((), ("Note",))
 
 
 @pytest.mark.parametrize(
@@ -67,6 +68,9 @@ def test_valid_entries_load(tmp_path: Path) -> None:
         ({"language": "swe"}, "language must be"),
         ({"doc_type": "blog"}, "doc_type must be"),
         ({"skip_sections": "("}, "skip_sections"),
+        ({"skip_classes": "LegCommentaryLink"}, "skip_classes must be"),
+        ({"skip_classes": []}, "skip_classes must be"),
+        ({"skip_classes": ["a b"]}, "skip_classes must be"),
         ({"url": "http://example.org"}, "https URL"),
         ({"url": "https:///no-host"}, "https URL"),
         ({"tags": []}, "tags must be"),

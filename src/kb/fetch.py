@@ -80,6 +80,10 @@ def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int =
         raise FetchError(str(getattr(exc, "reason", exc))) from exc
     if len(body) > max_bytes:
         raise FetchError(f"body exceeds {max_bytes} bytes")
+    # DEV-NOTE: AWS WAF (eur-lex.europa.eu) answers 202 with an empty body and this header; only a browser that
+    # runs the challenge script gets the page, so the error says so instead of "empty body".
+    if headers.get("x-amzn-waf-action") == "challenge":
+        raise FetchError("AWS WAF challenge (needs a browser)")
     if not body:
         raise FetchError("empty body")
     # read(amt) returns a short body without raising when the connection drops.

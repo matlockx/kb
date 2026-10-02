@@ -14,7 +14,7 @@ from kb.domain import ConfigError, Domain
 STRING_FIELDS = ("id", "publisher", "title", "url", "language", "doc_type")
 PATTERN_FIELDS = ("section_pattern", "chapter_pattern", "body_start", "body_end", "skip_sections")
 LABEL_FIELDS = ("chapter_label", "first_chapter", "section_label")
-ALL_FIELDS = frozenset({*STRING_FIELDS, *PATTERN_FIELDS, *LABEL_FIELDS, "tags"})
+ALL_FIELDS = frozenset({*STRING_FIELDS, *PATTERN_FIELDS, *LABEL_FIELDS, "tags", "skip_classes"})
 ID_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 LANGUAGE_RE = re.compile(r"[a-z]{2}")
 
@@ -36,6 +36,7 @@ class Source:
     first_chapter: str = ""  # prefix used before chapter_pattern first matches
     section_label: str | None = None  # re.Match.expand template for section refs, e.g. "\\g<num> §"
     skip_sections: str | None = None  # regex matched at the start of a section ref; extraction skips those sections
+    skip_classes: tuple[str, ...] = ()  # HTML class names whose elements, content included, parse leaves out
 
 
 def load(path: Path, domain: Domain) -> list[Source]:
@@ -66,6 +67,7 @@ def load(path: Path, domain: Domain) -> list[Source]:
                 tags=tuple(entry["tags"]),
                 **{k: entry.get(k) for k in (*PATTERN_FIELDS, "chapter_label", "section_label")},
                 first_chapter=entry.get("first_chapter", ""),
+                skip_classes=tuple(entry.get("skip_classes", ())),
             )
         )
 
@@ -106,6 +108,14 @@ def _entry_problems(entry: dict[object, object], domain: Domain) -> list[str]:
         problems.append(f"unknown tags {unknown}; allowed {list(domain.tags)} (domain.yaml)")
     elif len(set(tags)) != len(tags):
         problems.append("tags contains duplicates")
+
+    skip = entry.get("skip_classes")
+    if "skip_classes" in entry and (
+        not isinstance(skip, list)
+        or not skip
+        or not all(isinstance(c, str) and c and not any(ch.isspace() for ch in c) for c in skip)
+    ):
+        problems.append("skip_classes must be a non-empty list of class names without whitespace")
 
     for key in PATTERN_FIELDS:
         if key in entry:

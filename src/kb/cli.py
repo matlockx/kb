@@ -7,7 +7,7 @@ import statistics
 import sys
 from pathlib import Path
 
-from kb import db, domain, evaluate, fetch, index, parse, setup, sources, statements
+from kb import db, domain, evaluate, extract, fetch, index, parse, setup, sources, statements
 
 DOWNLOADS = Path("downloads")
 INGEST_SCRIPT = "ingest.sh"  # written into the downloads folder, beside the per-source folders
@@ -74,7 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         "replace its chunks. sources.yaml can set section_pattern and chapter_pattern (regexes with a "
         "(?P<ref>...) group; HTML headings appear as '## Title'), body_start and body_end (regexes for the first "
         "body line and the first line after the body), section_label, chapter_label and first_chapter (ref "
-        "templates and prefixes). Without a pattern, sections split at HTML headings or PDF pages. Prints chunk "
+        "templates and prefixes), and skip_classes (HTML class names whose elements are left out). Without a "
+        "pattern, sections split at HTML headings or PDF pages. Prints chunk "
         "counts and sizes per source. Exits 1 if any source failed, or if a version's chunks are already cited "
         "by statements.",
     )
@@ -103,6 +104,18 @@ def main(argv: list[str] | None = None) -> int:
     cmd.add_argument("--model", default=statements.DEFAULT_MODEL, help="pi model (default: %(default)s)")
     cmd.add_argument("--workers", type=int, default=4, help="parallel model calls (default: %(default)s)")
     cmd.add_argument("--matching", metavar="REGEX", type=_regex, help="extract only sections whose text matches")
+
+    cmd = commands.add_parser(
+        "links",
+        parents=[registry],
+        help="list the links in a source's current version",
+        description="Print, one per line, the absolute http(s) URLs the current version of a source links to, in "
+        "document order and each once: <a href> in the HTML text the parser keeps (no navigation or footers) "
+        "and URI link annotations in a PDF. Fragments are dropped, links into the source itself left out. Add the "
+        "ones worth keeping to sources.yaml. Exits 1 when the source is unknown or has no fetched version.",
+    )
+    cmd.add_argument("id", help="source id")
+    cmd.add_argument("--raw", type=Path, default=Path("raw"), help="download directory (default: %(default)s)")
 
     commands.add_parser(
         "index",
@@ -170,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sources" and args.check:
         print(f"domain and {len(found)} sources valid")
         return 0
+    if args.command == "links":
+        return run_links(found, args.id, args.db, args.raw)
 
     if args.command in {"fetch", "parse", "extract"} and args.source:
         unknown = sorted(set(args.source) - {s.id for s in found})
@@ -328,6 +343,29 @@ def report_extract(reports: list[statements.Report]) -> int:
         f"{failed} sections failed"
     )
     return 1 if failed else 0
+
+
+def run_links(found: list[sources.Source], source_id: str, db_path: Path, raw: Path) -> int:
+    source = next((s for s in found if s.id == source_id), None)
+    if source is None:
+        print(f"unknown source id: {source_id}", file=sys.stderr)
+        return 1
+    conn = db.connect(db_path)
+    try:
+        version = parse.current_version(conn, source.id)
+    finally:
+        conn.close()
+    if version is None:
+        print(f"{source.id} has no fetched version; run kb fetch first", file=sys.stderr)
+        return 1
+    try:
+        urls = extract.links(raw / version[1], version[2], source.url, source.skip_classes)
+    except (OSError, ValueError) as exc:
+        print(f"{source.id}: {exc}", file=sys.stderr)
+        return 1
+    for url in urls:
+        print(url)
+    return 0
 
 
 def run_index(path: Path) -> int:

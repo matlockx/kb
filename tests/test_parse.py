@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 from pypdf import PdfWriter
+from pypdf.annotations import Link
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from kb import chunk, db, extract, parse, sources
@@ -44,6 +45,19 @@ def test_html_reads_inside_the_aspnet_page_form_whatever_its_id() -> None:
 
 def test_html_unclosed_tags_do_not_leak_skipping() -> None:
     assert extract.from_html("<body><p>one<nav>skip</p><p>two</p></body>") == [Block("one"), Block("two")]
+
+
+def test_html_skip_classes_drop_elements_and_their_links(tmp_path: Path) -> None:
+    html = (
+        '<body><h4><span class="LegP1No"><a class="LegCommentaryLink" href="#c1">X1</a>180</span> Rights</h4>'
+        '<p class="Note other">dropped <a href="https://example.org/n">n</a></p><p class="Notes">kept</p></body>'
+    )
+    assert extract.from_html(html, {"LegCommentaryLink", "Note"}) == [Block("180 Rights", level=4), Block("kept")]
+    assert extract.from_html(html)[0] == Block("X1180 Rights", level=4)
+    path = tmp_path / "doc.html"
+    path.write_text(html, encoding="utf-8")
+    assert extract.links(path, "text/html", "https://example.org/act") == ["https://example.org/n"]
+    assert extract.links(path, "text/html", "https://example.org/act", {"Note"}) == []
 
 
 def test_html_cookie_state_class_on_body_does_not_skip_the_page() -> None:
@@ -114,6 +128,40 @@ def test_xhtml_is_read_as_html(tmp_path: Path) -> None:
     path = tmp_path / "doc.html"
     path.write_text('<?xml version="1.0"?><html><body><p>Article 135</p></body></html>', encoding="utf-8")
     assert extract.extract(path, "application/xhtml+xml") == [Block("Article 135")]
+
+
+def test_html_links_resolve_dedupe_and_skip_navigation_and_self(tmp_path: Path) -> None:
+    path = tmp_path / "doc.html"
+    base = "https://example.org/act/index.html"
+    path.write_text(
+        '<body><nav><a href="/home">Home</a></nav><p>See <a href="annex.pdf#p2">Annex</a>, '
+        '<a href="#art1">Article 1</a>, <a href="https://other.org/x">x</a>, <a href=" annex.pdf ">again</a>, '
+        '<a href="mailto:a@b.org">mail</a> and <a href="index.html?print=1">print</a>.</p></body>',
+        encoding="utf-8",
+    )
+    assert extract.links(path, "text/html", base) == [
+        "https://example.org/act/annex.pdf",
+        "https://other.org/x",
+        "https://example.org/act/index.html?print=1",
+    ]
+
+
+def test_pdf_links_come_from_uri_annotations(tmp_path: Path) -> None:
+    reader_input = io.BytesIO(pdf_with_pages("Section 1", "Section 2"))
+    writer = PdfWriter(clone_from=reader_input)
+    writer.add_annotation(1, Link(rect=(10, 10, 50, 50), url="https://example.org/annex"))
+    writer.add_annotation(0, Link(rect=(10, 10, 50, 50), target_page_index=1))  # internal jump, no URI
+    path = tmp_path / "doc.pdf"
+    with path.open("wb") as out:
+        writer.write(out)
+    assert extract.links(path, "application/pdf", "https://example.org/act.pdf") == ["https://example.org/annex"]
+
+
+def test_links_of_an_unreadable_pdf_raise_value_error(tmp_path: Path) -> None:
+    path = tmp_path / "doc.pdf"
+    path.write_bytes(b"%PDF-1.7 truncated")
+    with pytest.raises(ValueError, match="unreadable PDF"):
+        extract.links(path, "application/pdf", "https://example.org/act.pdf")
 
 
 def test_unsupported_content_type_is_rejected(tmp_path: Path) -> None:
@@ -321,7 +369,7 @@ def test_cli_parse(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from kb.cli import main
 
     registry = tmp_path / "sources.yaml"
-    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["food"]}
+    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "", ())} | {"tags": ["food"]}
     registry.write_text(yaml.safe_dump([entry], allow_unicode=True), encoding="utf-8")
     database = tmp_path / "kb.db"
     args = ["--db", str(database), "--domain", str(write_domain(tmp_path)), "parse", "--file", str(registry)]

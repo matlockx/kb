@@ -73,6 +73,7 @@ CHALLENGED = FakeResponse(b"", cf_mitigated="challenge").headers
         (opener_returning(FakeResponse(b"12345")), "exceeds 4 bytes"),
         (opener_returning(FakeResponse(b"123", Content_Length="4")), "truncated: got 3 of 4 bytes"),
         (opener_returning(FakeResponse(b"x", cf_mitigated="challenge")), "Cloudflare challenge page"),
+        (opener_returning(FakeResponse(b"", x_amzn_waf_action="challenge")), r"AWS WAF challenge \(needs a browser\)"),
         (opener_raising(urllib.error.HTTPError(SOURCE.url, 503, "down", email.message.Message(), None)), "HTTP 503$"),
         (
             opener_raising(urllib.error.HTTPError(SOURCE.url, 403, "no", CHALLENGED, None)),
@@ -161,7 +162,7 @@ def test_failure_leaves_versions_untouched(conn: sqlite3.Connection, tmp_path: P
 
 
 def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["food"]}
+    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "", ())} | {"tags": ["food"]}
     other = {**entry, "id": "gb-rts", "url": "https://example.org/rts"}
     registry = tmp_path / "sources.yaml"
     registry.write_text(yaml.safe_dump([entry, other]), encoding="utf-8")
