@@ -22,7 +22,12 @@ from kb.sources import Source
 
 # Some bot filters (cdc.gov, mayoclinic.org, mdpi.com) answer 403 to a request without Accept-Language,
 # whatever its User-Agent; "*" leaves the server's language choice as it was without the header.
-HEADERS = {"User-Agent": "kb/0.1", "Accept-Language": "*"}
+# The User-Agent follows the crawler convention (product, version, contact URL): Human Kinetics answers
+# 403 to a bare "kb/0.1" and serves this form.
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; kb/0.1; +https://github.com/matlockx/reg)",
+    "Accept-Language": "*",
+}
 # Verify against the OS trust store, as curl and browsers do; the OpenSSL bundle
 # Python ships with can lack roots that some publishers use (e.g. HARICA, Sectigo R46).
 TLS = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
