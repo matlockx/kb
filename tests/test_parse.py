@@ -46,12 +46,12 @@ def test_html_decodes_the_declared_charset(tmp_path: Path) -> None:
     path = tmp_path / "page.html"
     iso = '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />'
     for meta in (iso, "<meta charset=bogus>", ""):  # "": no label at all
-        body = "<p>„Glücksspiel“ \u2013 x</p>".encode("cp1252")
+        body = "<p>„Gemüse“ \u2013 x</p>".encode("cp1252")
         path.write_bytes(f"<html><head>{meta}</head><body>".encode() + body + b"</body></html>")
-        expected = "„Glücksspiel“ \u2013 x"  # an unknown label falls back to sniffing: not UTF-8, so windows-1252
+        expected = "„Gemüse“ \u2013 x"  # an unknown label falls back to sniffing: not UTF-8, so windows-1252
         assert extract.extract(path, "text/html") == [Block(expected)]
-    path.write_text("<body><p>Glücksspiel</p></body>", encoding="utf-8")
-    assert extract.extract(path, "text/html") == [Block("Glücksspiel")]
+    path.write_text("<body><p>Gemüse</p></body>", encoding="utf-8")
+    assert extract.extract(path, "text/html") == [Block("Gemüse")]
 
 
 def pdf_with_pages(*pages: str) -> bytes:
@@ -129,21 +129,27 @@ def test_marked_blocks_win_over_patterns() -> None:
 
 def test_pattern_with_chapters_headings_and_titles() -> None:
     blocks = [
-        Block("Spellag", level=1),
+        Block("Livsmedelslag", level=1),
         Block("Innehåll: 1 kap. Tillämpning"),
         Block("1 kap. Tillämpning", level=3),
-        Block("1 § Lagen gäller spel."),
+        Block("1 § Lagen gäller livsmedel."),
         Block("Omsorgsplikt"),
-        Block("2 § Licenshavare ska skydda spelare."),
+        Block("2 § Företagare ska skydda konsumenter."),
         Block("2 kap. Uttryck", level=3),
         Block("1 § I lagen avses."),
     ]
     sections = chunk.split(blocks, r"^(?P<ref>\d+ §)", r"^### (?P<ref>\d+ kap\.)", body_start=r"^### 1 kap\.")
     assert sections == [
-        Section("(preamble)", (), "Spellag\nInnehåll: 1 kap. Tillämpning"),
-        Section("1 kap. 1 §", ("Spellag", "1 kap. Tillämpning"), "1 kap. Tillämpning\n1 § Lagen gäller spel."),
-        Section("1 kap. 2 §", ("Spellag", "1 kap. Tillämpning"), "Omsorgsplikt\n2 § Licenshavare ska skydda spelare."),
-        Section("2 kap. 1 §", ("Spellag", "2 kap. Uttryck"), "2 kap. Uttryck\n1 § I lagen avses."),
+        Section("(preamble)", (), "Livsmedelslag\nInnehåll: 1 kap. Tillämpning"),
+        Section(
+            "1 kap. 1 §", ("Livsmedelslag", "1 kap. Tillämpning"), "1 kap. Tillämpning\n1 § Lagen gäller livsmedel."
+        ),
+        Section(
+            "1 kap. 2 §",
+            ("Livsmedelslag", "1 kap. Tillämpning"),
+            "Omsorgsplikt\n2 § Företagare ska skydda konsumenter.",
+        ),
+        Section("2 kap. 1 §", ("Livsmedelslag", "2 kap. Uttryck"), "2 kap. Uttryck\n1 § I lagen avses."),
     ]
 
 
@@ -161,7 +167,7 @@ def test_body_start_that_never_matches_fails_loudly() -> None:
 
 
 def test_section_label_normalises_refs() -> None:
-    blocks = [Block("1§ Dessa föreskrifter gäller."), Block("10 § En spelare får bara ha ett konto.")]
+    blocks = [Block("1§ Dessa föreskrifter gäller."), Block("10 § En konsument får bara ha ett konto.")]
     sections = chunk.split(blocks, r"^(?P<ref>(?P<num>\d+) ?§)", section_label=r"\g<num> §")
     assert refs(sections) == ["1 §", "10 §"]
 
@@ -196,16 +202,16 @@ def test_long_sections_are_split_on_block_boundaries(monkeypatch: pytest.MonkeyP
 SOURCE = Source(
     id="dk-act",
     publisher="x",
-    title="Spilleloven",
+    title="Fødevareloven",
     url="https://example.org/dk",
     language="da",
     doc_type="act",
-    tags=("lottery",),
+    tags=("food",),
     section_pattern=r"^(?P<ref>§ \d+)\.",
 )
 
-PAGE = """<html><body><h1>Kapitel 1 Formål</h1><h2>Lotteri</h2>
-<p>§ 6. Tilladelse kan gives til Danske Spil A/S.</p><p>Stk. 2. Tilladelsen kan overdrages.</p></body></html>"""
+PAGE = """<html><body><h1>Kapitel 1 Formål</h1><h2>Tilsyn</h2>
+<p>§ 6. Tilladelse kan gives til Dansk Mejeri A/S.</p><p>Stk. 2. Tilladelsen kan overdrages.</p></body></html>"""
 
 
 @pytest.fixture
@@ -237,7 +243,7 @@ def test_parse_replaces_chunks_of_the_current_version(conn: sqlite3.Connection, 
     [result] = parse.parse_all(conn, [SOURCE], raw)
     assert (result.version_id, result.error, refs(result.sections)) == (old, None, ["§ 6"])
 
-    newer = PAGE.replace("Danske Spil A/S.", "Danske Spil A/S og andre.")
+    newer = PAGE.replace("Dansk Mejeri A/S.", "Dansk Mejeri A/S og andre.")
     new = add_version(conn, raw, "new.html", newer.encode(), "2026-02-01T00:00:00Z")
     parse.parse_all(conn, [SOURCE], raw)
     parse.parse_all(conn, [SOURCE], raw)  # idempotent
@@ -245,9 +251,9 @@ def test_parse_replaces_chunks_of_the_current_version(conn: sqlite3.Connection, 
         "SELECT id, version_id, section_ref, heading_path, text, sha256 FROM chunks ORDER BY id"
     ).fetchall()
     assert [r[:3] for r in rows] == [(f"{new}#0000", new, "§ 6"), (f"{old}#0000", old, "§ 6")]
-    assert json.loads(rows[0][3]) == ["Kapitel 1 Formål", "Lotteri"]
+    assert json.loads(rows[0][3]) == ["Kapitel 1 Formål", "Tilsyn"]
     assert rows[0][4] == (
-        "Kapitel 1 Formål\nLotteri\n§ 6. Tilladelse kan gives til Danske Spil A/S og andre.\n"
+        "Kapitel 1 Formål\nTilsyn\n§ 6. Tilladelse kan gives til Dansk Mejeri A/S og andre.\n"
         "Stk. 2. Tilladelsen kan overdrages."
     )
     assert rows[0][5] != rows[1][5]
@@ -292,9 +298,9 @@ def write_domain(tmp_path: Path) -> Path:
                 "name": "Test",
                 "instructions": "Test domain.",
                 "doc_types": ["act"],
-                "tags": ["lottery"],
+                "tags": ["food"],
                 "modalities": [{"id": "must", "description": "required"}],
-                "topics": [{"id": "licensing", "label": "Licensing", "description": "licences"}],
+                "topics": [{"id": "registration", "label": "Registration", "description": "registrations"}],
             }
         ),
         encoding="utf-8",
@@ -306,7 +312,7 @@ def test_cli_parse(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from kb.cli import main
 
     registry = tmp_path / "sources.yaml"
-    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["lottery"]}
+    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["food"]}
     registry.write_text(yaml.safe_dump([entry], allow_unicode=True), encoding="utf-8")
     database = tmp_path / "kb.db"
     args = ["--db", str(database), "--domain", str(write_domain(tmp_path)), "parse", "--file", str(registry)]
@@ -321,5 +327,5 @@ def test_cli_parse(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main([*args, "--sample", "1"]) == 0
     out = capsys.readouterr().out
     assert "dk-act                                  1" in out
-    assert "  --- § 6  [Kapitel 1 Formål > Lotteri]" in out
+    assert "  --- § 6  [Kapitel 1 Formål > Tilsyn]" in out
     assert out.rstrip().endswith("1 parsed, 0 failed")
