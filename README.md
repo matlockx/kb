@@ -5,8 +5,7 @@ and cite instead of relying on their training data. The engine is
 domain-neutral: one knowledge base is a directory of four files you edit, and
 one checkout of this repository serves any number of them side by side.
 
-It was extracted from `regkb`, a gambling-regulation knowledge base, and keeps
-its pipeline: hand-curated sources, versioned downloads, sections split on the
+Pipeline: hand-curated sources, versioned downloads, sections split on the
 document's own numbering, model-extracted statements that must quote the
 source verbatim, hybrid search, an MCP server and a golden-set evaluation.
 
