@@ -151,7 +151,7 @@ Inside a knowledge base directory, with the `kb` alias above:
 ```sh
 kb sources --check   # validate domain.yaml and sources.yaml
 kb sources           # sync both into data/kb.db
-kb fetch             # download every source into raw/
+kb fetch             # download every source into raw/ (files in downloads/ first)
 kb fetch --source ID # one source (repeatable)
 kb parse             # split current versions into section chunks
 kb parse --source ID --sample 3   # spot-check three random chunks
@@ -183,9 +183,29 @@ A block or challenge page must not hide a good copy, so these fail too and the
 download is discarded: a Cloudflare challenge (the `cf-mitigated` header or its
 challenge script), HTML where the current version is a PDF or another
 non-HTML document, and a download with no body sections where the current
-version has some. A Cloudflare challenge needs a browser; download such a
-document by hand. If the page really changed that way, delete the old versions
-(and the statements citing them, as for re-chunking below) to accept it.
+version has some. A Cloudflare challenge needs a browser. If the page really
+changed that way, delete the old versions (and the statements citing them, as
+for re-chunking below) to accept it.
+
+### Downloading by hand
+
+When sources fail, `kb fetch` ends with a numbered table: one line per failed
+source with its link and the folder to save the file into,
+`downloads/<source>/` (created for you; `--downloads DIR` moves it). Open each
+link in a browser, save the PDF, or the page as HTML, into the folder on its
+line; the file name does not matter, one file per folder. The table ends with
+the command that stores and ingests them:
+
+```sh
+kb -C DIR fetch --source ID…; kb -C DIR parse --source ID…; kb -C DIR extract --source ID…; kb -C DIR index
+```
+
+A plain `kb fetch` (or `./setup NAME`) picks the files up too. A file saved by
+hand is stored instead of downloading that source's URL, with the same checks
+as a download, and is removed from its folder once stored; a file that fails
+(several files, a type other than `.pdf`, `.html`, `.htm` or `.xhtml`, an empty
+file, a challenge page, or a refused block page) stays where it is. Add
+`downloads/` to the `.gitignore` of a knowledge base created before it existed.
 
 ## Parsing
 

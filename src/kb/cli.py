@@ -2,11 +2,14 @@ import argparse
 import os
 import random
 import re
+import shlex
 import statistics
 import sys
 from pathlib import Path
 
 from kb import db, domain, evaluate, fetch, index, parse, setup, sources, statements
+
+DOWNLOADS = Path("downloads")
 
 
 def _regex(value: str) -> str:
@@ -48,10 +51,18 @@ def main(argv: list[str] | None = None) -> int:
         help="download sources; changed content becomes a new version",
         description="Download every source (or those given with --source) into the raw directory. "
         "Content with a new hash is recorded as a new version; old versions are never overwritten. "
+        "A file saved by hand into DOWNLOADS/<source id>/ is stored instead of downloading the URL and is then "
+        "removed from there; failed sources are listed with their links and folders for that. "
         "Exits 1 if any download failed.",
     )
     cmd.add_argument("--source", action="append", metavar="ID", help="fetch only this source (repeatable)")
     cmd.add_argument("--raw", type=Path, default=Path("raw"), help="download directory (default: %(default)s)")
+    cmd.add_argument(
+        "--downloads",
+        type=Path,
+        default=DOWNLOADS,
+        help="folder of files saved by hand, one subfolder per source id (default: %(default)s)",
+    )
 
     cmd = commands.add_parser(
         "parse",
@@ -171,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         stale = sources.sync(conn, found)
         statements.sync_topics(conn, defined.topics)
-        results = fetch.fetch_all(conn, selected, args.raw) if args.command == "fetch" else None
+        results = fetch.fetch_all(conn, selected, args.raw, inbox=args.downloads) if args.command == "fetch" else None
         parsed = parse.parse_all(conn, selected, args.raw) if args.command == "parse" else None
         extracted = None
         if system is not None:
@@ -201,7 +212,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{result.status:<9} {result.source_id}  {result.detail}")
     counts = {status: sum(r.status == status for r in results) for status in ("new", "changed", "unchanged", "failed")}
     print(", ".join(f"{n} {status}" for status, n in counts.items()))
-    return 1 if counts["failed"] else 0
+    failed = [r.source_id for r in results if r.status == "failed"]
+    if failed:
+        report_manual([s for s in selected if s.id in failed], args)
+    return 1 if failed else 0
+
+
+def report_manual(failed: list[sources.Source], args: argparse.Namespace) -> None:
+    """List the sources to download in a browser with the folder to save each into (created here), and the
+    command that stores and ingests them, with the options of this run that differ from the defaults."""
+    downloads = args.downloads
+    for source in failed:
+        (downloads / source.id).mkdir(parents=True, exist_ok=True)
+    folders = [f"{downloads.resolve() / s.id}/" for s in failed]
+    width = max(len("save into"), *map(len, folders))
+    print(f"\nDownload {len(failed)} by hand: open each link in a browser and save the PDF, or the page as HTML,")
+    print("into the folder on its line (one file per folder; the file name does not matter):\n")
+    print(f"  {'#':>3}  {'save into':<{width}}  link")
+    for number, (source, folder) in enumerate(zip(failed, folders, strict=True), start=1):
+        print(f"  {number:>3}  {folder:<{width}}  {source.url}")
+    kb = " ".join(
+        [
+            "kb",
+            "-C",
+            shlex.quote(str(Path.cwd())),
+            *_changed("--db", args.db, db.DEFAULT_PATH),
+            *_changed("--domain", args.domain, Path("domain.yaml")),
+        ]
+    )
+    registry = _changed("--file", args.file, Path("sources.yaml"))
+    raw = _changed("--raw", args.raw, Path("raw"))
+    only = [f"--source {s.id}" for s in failed]
+    steps = [
+        ["fetch", *registry, *raw, *_changed("--downloads", downloads, DOWNLOADS), *only],
+        ["parse", *registry, *raw, *only],
+        ["extract", *registry, *only],
+        ["index"],
+    ]
+    print("\nThen store and ingest them; each file is removed from its folder once stored, and a source")
+    print("without a file is tried online again and listed here again:\n")
+    print("  " + "; ".join(f"{kb} {' '.join(step)}" for step in steps))
+
+
+def _changed(option: str, value: Path, default: Path) -> list[str]:
+    """[option, absolute value] when value is not the default, else nothing."""
+    return [] if value == default else [option, shlex.quote(str(value.resolve()))]
 
 
 def report_parse(parsed: list[parse.Parsed], sample: int) -> int:
