@@ -20,7 +20,7 @@ SOURCE = Source(
     url="https://example.org/act",
     language="en",
     doc_type="act",
-    tags=("casino",),
+    tags=("food",),
 )
 
 
@@ -146,7 +146,7 @@ def test_failure_leaves_versions_untouched(conn: sqlite3.Connection, tmp_path: P
 
 
 def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["casino"]}
+    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["food"]}
     other = {**entry, "id": "gb-rts", "url": "https://example.org/rts"}
     registry = tmp_path / "sources.yaml"
     registry.write_text(yaml.safe_dump([entry, other]), encoding="utf-8")
@@ -157,9 +157,9 @@ def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
                 "name": "Test",
                 "instructions": "Test domain.",
                 "doc_types": ["act"],
-                "tags": ["casino"],
+                "tags": ["food"],
                 "modalities": [{"id": "must", "description": "required"}],
-                "topics": [{"id": "licensing", "label": "Licensing", "description": "licences"}],
+                "topics": [{"id": "registration", "label": "Registration", "description": "registrations"}],
             }
         ),
         encoding="utf-8",

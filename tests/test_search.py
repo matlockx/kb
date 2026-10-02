@@ -23,9 +23,9 @@ DOMAIN = Domain(
     name="Test",
     instructions="Test domain.",
     doc_types=("act", "regulation"),
-    tags=("casino", "sports", "lottery"),
+    tags=("food", "toys", "cosmetics"),
     modalities=(Modality("must", "required"), Modality("should", "advised")),
-    topics=(Topic("self_exclusion", "Self-exclusion", "d"), Topic("marketing", "Marketing", "d")),
+    topics=(Topic("recalls", "Recalls", "d"), Topic("marketing", "Marketing", "d")),
 )
 
 
@@ -42,18 +42,18 @@ def fake_embed(texts: Sequence[str]) -> np.ndarray:
 def source(id_: str, language: str = "en", **extra: object) -> Source:
     fields: dict[str, object] = {
         "id": id_, "publisher": "A", "title": f"Title {id_}", "url": f"https://example.org/{id_}",
-        "language": language, "doc_type": "regulation", "tags": ("casino", "sports"),
+        "language": language, "doc_type": "regulation", "tags": ("food", "toys"),
     }  # fmt: skip
     return Source(**{**fields, **extra})  # type: ignore[arg-type]
 
 
 GB = source("gb-code")
-GB_COPY = source("gb-code-betting")
-SE = source("se-lag", "sv", doc_type="act", tags=("lottery",))
+GB_COPY = source("gb-code-retail")
+SE = source("se-lag", "sv", doc_type="act", tags=("cosmetics",))
 
 
-def stmt(quote: str, summary: str, modality: str = "must", tags: tuple[str, ...] = ("casino",)) -> Statement:
-    return Statement(quote, summary, modality, ("self_exclusion",), tags)
+def stmt(quote: str, summary: str, modality: str = "must", tags: tuple[str, ...] = ("food",)) -> Statement:
+    return Statement(quote, summary, modality, ("recalls",), tags)
 
 
 @pytest.fixture
@@ -61,25 +61,25 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     conn = db.connect(tmp_path / "kb.db")
     sources.sync(conn, [GB, GB_COPY, SE])
     sync_topics(conn, DOMAIN.topics)
-    for doc in ("gb-code", "gb-code-betting", "se-lag"):
+    for doc in ("gb-code", "gb-code-retail", "se-lag"):
         with conn:
             conn.execute(
                 "INSERT INTO document_versions (id, document_id, sha256, raw_path, fetched_at, last_checked_at) "
                 "VALUES (?, ?, ?, 'x', '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z')",
                 (f"{doc}@v1", doc, hashlib.sha256(doc.encode()).hexdigest()),
             )
-    gb_text = "Licensees must offer a self-exclusion facility of at least six months."
+    gb_text = "Producers must run a post-market recall service for at least six months."
     parse.store(conn, "gb-code@v1", [
-        Section("code 3.5.3", ("Social responsibility",), gb_text),
-        Section("code 5.1.1 (part 1)", (), "Marketing must be socially responsible."),
-        Section("code 5.1.1 (part 2)", (), "Bonus offers must not target excluded customers."),
+        Section("code 3.5.3", ("Product safety",), gb_text),
+        Section("code 5.1.1 (part 1)", (), "Marketing must be truthful."),
+        Section("code 5.1.1 (part 2)", (), "Promotional offers must not target children."),
     ])  # fmt: skip
-    parse.store(conn, "gb-code-betting@v1", [Section("code 3.5.3", (), gb_text)])
-    parse.store(conn, "se-lag@v1", [Section("14 kap. 1 §", (), "En licenshavare ska erbjuda självavstängning.")])
-    six_months = stmt(gb_text, "Licensees must offer self-exclusion of at least six months.")
+    parse.store(conn, "gb-code-retail@v1", [Section("code 3.5.3", (), gb_text)])
+    parse.store(conn, "se-lag@v1", [Section("14 kap. 1 §", (), "En producent ska erbjuda återkallelse.")])
+    six_months = stmt(gb_text, "Producers must run post-market recalls for at least six months.")
     _store(conn, "gb-code@v1#0000", [six_months], "m", "p", "t")
-    _store(conn, "gb-code-betting@v1#0000", [six_months], "m", "p", "t")
-    swedish = stmt("En licenshavare ska erbjuda självavstängning.", "Offer self-exclusion.", tags=("lottery",))
+    _store(conn, "gb-code-retail@v1#0000", [six_months], "m", "p", "t")
+    swedish = stmt("En producent ska erbjuda återkallelse.", "Offer recalls.", tags=("cosmetics",))
     _store(conn, "se-lag@v1#0000", [swedish], "m", "p", "t")
     index.build_fts(conn)
     index.sync_vectors(conn, "chunk", index.chunk_texts(conn), index.EMBED_MODEL, fake_embed)
@@ -100,28 +100,28 @@ def refs(result: dict[str, object]) -> list[tuple[str, str]]:
 def test_search_ranks_matching_sections_with_their_statements(
     conn: sqlite3.Connection, searcher: search.Searcher
 ) -> None:
-    result = search.search(conn, searcher, "self-exclusion six months", limit=3)
-    assert refs(result)[0] in {("gb-code", "code 3.5.3"), ("gb-code-betting", "code 3.5.3")}
+    result = search.search(conn, searcher, "post-market recall six months", limit=3)
+    assert refs(result)[0] in {("gb-code", "code 3.5.3"), ("gb-code-retail", "code 3.5.3")}
     first = result["results"][0]  # type: ignore[index]
-    assert first["statements"][0]["summary"] == "Licensees must offer self-exclusion of at least six months."
+    assert first["statements"][0]["summary"] == "Producers must run post-market recalls for at least six months."
     assert first["version"] and first["url"].startswith("https://")
     assert "note" not in result
 
 
 def test_search_shows_identical_sections_once(conn: sqlite3.Connection, searcher: search.Searcher) -> None:
-    result = search.search(conn, searcher, "self-exclusion six months", tags=["casino"])
+    result = search.search(conn, searcher, "post-market recall six months", tags=["food"])
     [section] = [r for r in result["results"] if r["section_ref"] == "code 3.5.3"]  # type: ignore[index, attr-defined]
     assert len(section["also_in"]) == 1
 
 
 def test_search_filters(conn: sqlite3.Connection, searcher: search.Searcher) -> None:
-    only_lottery = search.search(conn, searcher, "self-exclusion", tags=["lottery"])
-    assert {s for s, _ in refs(only_lottery)} == {"se-lag"}
-    by_topic = search.search(conn, searcher, "marketing bonus", topics=["self_exclusion"])
+    only_cosmetics = search.search(conn, searcher, "post-market recall", tags=["cosmetics"])
+    assert {s for s, _ in refs(only_cosmetics)} == {"se-lag"}
+    by_topic = search.search(conn, searcher, "marketing promotional", topics=["recalls"])
     assert all(ref != "code 5.1.1 (part 1)" for _, ref in refs(by_topic))
 
 
-@pytest.mark.parametrize("query", ['" OR 1 NEAR(', "AND OR NOT *", 'self-exclusion"; DROP TABLE chunks; --'])
+@pytest.mark.parametrize("query", ['" OR 1 NEAR(', "AND OR NOT *", 'post-market"; DROP TABLE chunks; --'])
 def test_search_escapes_fts_syntax(conn: sqlite3.Connection, searcher: search.Searcher, query: str) -> None:
     search.search(conn, searcher, query)
     assert conn.execute("SELECT count(*) FROM chunks").fetchone()[0] == 5
@@ -132,19 +132,17 @@ def test_search_errors_and_notes(conn: sqlite3.Connection, searcher: search.Sear
         search.search(conn, searcher, "x", topics=["nope"])
     with pytest.raises(search.QueryError, match="empty"):
         search.search(conn, searcher, "  ")
-    assert "do not fill the gap" in search.search(conn, searcher, "x", tags=["bingo"])["note"]  # type: ignore[operator]
+    assert "do not fill the gap" in search.search(conn, searcher, "x", tags=["textiles"])["note"]  # type: ignore[operator]
     conn.execute("DELETE FROM vectors")
-    assert "keyword-only" in search.search(conn, searcher, "self-exclusion")["note"]  # type: ignore[operator]
+    assert "keyword-only" in search.search(conn, searcher, "post-market")["note"]  # type: ignore[operator]
     conn.execute("DROP TABLE chunks_fts")
     with pytest.raises(search.QueryError, match="run `kb index`"):
-        search.search(conn, searcher, "self-exclusion")
+        search.search(conn, searcher, "post-market")
 
 
 def test_get_section_joins_parts_and_suggests_refs(conn: sqlite3.Connection) -> None:
     section = search.get_section(conn, "gb-code", "code 5.1.1")
-    assert (
-        section["text"] == "Marketing must be socially responsible.\nBonus offers must not target excluded customers."
-    )
+    assert section["text"] == "Marketing must be truthful.\nPromotional offers must not target children."
     with pytest.raises(search.QueryError, match=r"similar refs: .*code 5\.1\.1 \(part 1\)"):
         search.get_section(conn, "gb-code", "code 5.1.9")
     with pytest.raises(search.QueryError, match=r"'Annex A' in gb-code; similar refs: code 3\.5\.3"):
@@ -154,44 +152,44 @@ def test_get_section_joins_parts_and_suggests_refs(conn: sqlite3.Connection) -> 
 
 
 def test_topic_dedupes_filters_and_notes(conn: sqlite3.Connection) -> None:
-    result = search.topic(conn, DOMAIN, "self_exclusion")
+    result = search.topic(conn, DOMAIN, "recalls")
     assert result["statements_total"] == 2
     se, gb = result["statements"]  # type: ignore[misc]
     assert se["source_id"] == "se-lag"  # "act" comes before "regulation" in the domain
-    assert (gb["source_id"], gb["also_in"]) == ("gb-code", ["gb-code-betting code 3.5.3"])
-    lottery = search.topic(conn, DOMAIN, "self_exclusion", tags=["lottery"])["statements"]
-    assert [s["source_id"] for s in lottery] == ["se-lag"]  # type: ignore[index]
+    assert (gb["source_id"], gb["also_in"]) == ("gb-code", ["gb-code-retail code 3.5.3"])
+    cosmetics = search.topic(conn, DOMAIN, "recalls", tags=["cosmetics"])["statements"]
+    assert [s["source_id"] for s in cosmetics] == ["se-lag"]  # type: ignore[index]
     assert "not proof that none exists" in search.topic(conn, DOMAIN, "marketing")["note"]  # type: ignore[operator]
     with pytest.raises(search.QueryError, match="unknown topics"):
         search.topic(conn, DOMAIN, "nope")
 
 
 def test_topic_lists_strongest_modality_first(conn: sqlite3.Connection) -> None:
-    text = "Licensees should remind customers. Licensees must block excluded customers."
-    with conn:  # a second section in the betting extract; parse.store refuses once statements cite a version
+    text = "Producers should notify customers. Producers must withdraw unsafe products."
+    with conn:  # a second section in the retail extract; parse.store refuses once statements cite a version
         conn.execute(
             "INSERT INTO chunks (id, version_id, ord, section_ref, heading_path, text, sha256) "
-            "VALUES ('gb-code-betting@v1#0001', 'gb-code-betting@v1', 1, 'code 3.5.1', '[]', ?, 'x')",
+            "VALUES ('gb-code-retail@v1#0001', 'gb-code-retail@v1', 1, 'code 3.5.1', '[]', ?, 'x')",
             (text,),
         )
-    _store(conn, "gb-code-betting@v1#0001", [
-        stmt("Licensees should remind customers.", "Remind customers.", "should"),
-        stmt("Licensees must block excluded customers.", "Block excluded customers."),
+    _store(conn, "gb-code-retail@v1#0001", [
+        stmt("Producers should notify customers.", "Notify customers.", "should"),
+        stmt("Producers must withdraw unsafe products.", "Withdraw unsafe products."),
     ], "m", "p", "t")  # fmt: skip
-    found = search.topic(conn, DOMAIN, "self_exclusion")["statements"]
+    found = search.topic(conn, DOMAIN, "recalls")["statements"]
     assert [s["modality"] for s in found] == ["must", "must", "must", "should"]  # type: ignore[index]
     reversed_order = dataclasses.replace(DOMAIN, modalities=DOMAIN.modalities[::-1])
-    assert search.topic(conn, reversed_order, "self_exclusion")["statements"][0]["modality"] == "should"  # type: ignore[index]
+    assert search.topic(conn, reversed_order, "recalls")["statements"][0]["modality"] == "should"  # type: ignore[index]
 
 
 def test_sources_lists_versions_and_topics(conn: sqlite3.Connection) -> None:
     listed = search.sources(conn)
-    assert [s["source_id"] for s in listed["sources"]] == ["gb-code", "gb-code-betting", "se-lag"]  # type: ignore[attr-defined]
+    assert [s["source_id"] for s in listed["sources"]] == ["gb-code", "gb-code-retail", "se-lag"]  # type: ignore[attr-defined]
     se = listed["sources"][2]  # type: ignore[index]
-    assert (se["statements"], se["sections"], se["tags"]) == (1, 1, ["lottery"])
+    assert (se["statements"], se["sections"], se["tags"]) == (1, 1, ["cosmetics"])
     assert listed["topics"] == [
         {"id": "marketing", "label": "Marketing"},
-        {"id": "self_exclusion", "label": "Self-exclusion"},
+        {"id": "recalls", "label": "Recalls"},
     ]
 
 
@@ -234,7 +232,7 @@ def test_mcp_server_over_stdio(tmp_path: Path) -> None:
         {"id": 3, "method": "tools/call", "params": {"name": "kb_sources", "arguments": {}}},
         {"id": 4, "method": "tools/call",
          "params": {"name": "kb_get", "arguments": {"source_id": "x", "section_ref": "1"}}},
-        {"id": 5, "method": "tools/call", "params": {"name": "kb_topic", "arguments": {"topic": "self_exclusion"}}},
+        {"id": 5, "method": "tools/call", "params": {"name": "kb_topic", "arguments": {"topic": "recalls"}}},
     ]  # fmt: skip
     proc = subprocess.Popen(  # noqa: S603 - fixed argv
         [sys.executable, "-c", "import sys; from kb.cli import main; sys.exit(main(sys.argv[1:]))",
@@ -260,6 +258,6 @@ def test_mcp_server_over_stdio(tmp_path: Path) -> None:
     assert {t["name"] for t in tools} == {"kb_search", "kb_get", "kb_topic", "kb_sources"}
     assert all(t["annotations"]["readOnlyHint"] for t in tools)
     listed = json.loads(replies[3]["result"]["content"][0]["text"])  # type: ignore[index]
-    assert [s["source_id"] for s in listed["sources"]] == ["gb-code", "gb-code-betting", "se-lag"]
+    assert [s["source_id"] for s in listed["sources"]] == ["gb-code", "gb-code-retail", "se-lag"]
     assert "unknown source_id 'x'" in json.loads(replies[4]["result"]["content"][0]["text"])["error"]  # type: ignore[index]
     assert json.loads(replies[5]["result"]["content"][0]["text"])["statements_total"] == 2  # type: ignore[index]

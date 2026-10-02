@@ -13,18 +13,18 @@ DOMAIN = Domain(
     name="Test",
     instructions="Test domain.",
     doc_types=("act", "guidance"),
-    tags=("lottery", "casino"),
+    tags=("cosmetics", "food"),
     modalities=(Modality("must", "Required."),),
-    topics=(Topic("licensing", "Licensing", "Licences."),),
+    topics=(Topic("registration", "Registration", "Registrations."),),
 )
 ORIGINAL = {
     "id": "se-act",
     "publisher": "Riksdag",
-    "title": "Spellag",
+    "title": "Livsmedelslag",
     "url": "https://example.org/sv",
     "language": "sv",
     "doc_type": "act",
-    "tags": ["lottery", "casino"],
+    "tags": ["cosmetics", "food"],
 }
 
 
@@ -54,10 +54,10 @@ def test_parse_fields_load(tmp_path: Path) -> None:
 
 
 def test_valid_entries_load(tmp_path: Path) -> None:
-    second = {**ORIGINAL, "id": "se-guide", "doc_type": "guidance", "tags": ["casino"]}
+    second = {**ORIGINAL, "id": "se-guide", "doc_type": "guidance", "tags": ["food"]}
     found = sources.load(write(tmp_path, [ORIGINAL, second]), DOMAIN)
     assert [s.id for s in found] == ["se-act", "se-guide"]
-    assert found[0].tags == ("lottery", "casino")
+    assert found[0].tags == ("cosmetics", "food")
 
 
 @pytest.mark.parametrize(
@@ -70,8 +70,8 @@ def test_valid_entries_load(tmp_path: Path) -> None:
         ({"url": "http://example.org"}, "https URL"),
         ({"url": "https:///no-host"}, "https URL"),
         ({"tags": []}, "tags must be"),
-        ({"tags": ["slots"]}, "unknown tags"),
-        ({"tags": ["casino", "casino"]}, "duplicates"),
+        ({"tags": ["textiles"]}, "unknown tags"),
+        ({"tags": ["food", "food"]}, "duplicates"),
         ({"title": "  "}, "title must be a non-empty string"),
         ({"extra": 1}, "unknown field 'extra'"),
         ({"section_pattern": "(unclosed"}, "section_pattern is not a valid regex"),
@@ -111,10 +111,10 @@ def test_sync_upserts_and_reports_stale(tmp_path: Path) -> None:
     second = {**ORIGINAL, "id": "se-guide"}
     assert sources.sync(conn, sources.load(write(tmp_path, [ORIGINAL, second]), DOMAIN)) == []
 
-    renamed = {**ORIGINAL, "title": "Spellag (2018:1138)"}
+    renamed = {**ORIGINAL, "title": "Livsmedelslag (2006:804)"}
     assert sources.sync(conn, sources.load(write(tmp_path, [renamed]), DOMAIN)) == ["se-guide"]
     title, tags = conn.execute("SELECT title, tags FROM documents WHERE id = 'se-act'").fetchone()
-    assert (title, json.loads(tags)) == ("Spellag (2018:1138)", ["lottery", "casino"])
+    assert (title, json.loads(tags)) == ("Livsmedelslag (2006:804)", ["cosmetics", "food"])
 
 
 def write_domain(tmp_path: Path) -> Path:

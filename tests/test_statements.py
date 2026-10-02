@@ -20,31 +20,31 @@ DOMAIN = Domain(
     name="Test",
     instructions="Test domain.",
     doc_types=("act", "regulation"),
-    tags=("casino", "sports", "lottery"),
+    tags=("food", "toys", "cosmetics"),
     modalities=(Modality("must", "required"), Modality("should", "advised"), Modality("may", "allowed")),
-    topics=(Topic("kyc", "Identity", "d"), Topic("age_verification", "Age", "d")),
+    topics=(Topic("labelling", "Labelling", "d"), Topic("allergens", "Allergens", "d")),
 )
-TOPIC_IDS = frozenset({"kyc", "age_verification"})
+TOPIC_IDS = frozenset({"labelling", "allergens"})
 MODALITIES = frozenset({"must", "should", "may"})
 SOURCE = Source(
     id="ie-si",
-    publisher="GRAI",
+    publisher="FSAI",
     title="S.I. 315",
     url="https://example.org/si",
     language="en",
     doc_type="regulation",
-    tags=("casino", "sports"),
+    tags=("food", "toys"),
 )
 TEXT = (
-    "3. A licensee verifies the identity where—\n(a) the person provides a copy of a photo document, and\n"
+    "3. A producer labels the product where—\n(a) the product contains an allergen listed in a schedule, and\n"
     "(b) more, within 2-3 days."
 )
 RECORD = {
-    "verbatim_quote": "the person provides a copy of a photo document,",
-    "summary": "One accepted way is a photo document.",
+    "verbatim_quote": "the product contains an allergen listed in a schedule,",
+    "summary": "One trigger is a listed allergen.",
     "modality": "may",
-    "topics": ["kyc", "age_verification"],
-    "applies_to": ["casino"],
+    "topics": ["labelling", "allergens"],
+    "applies_to": ["food"],
 }
 
 
@@ -71,9 +71,9 @@ def system(tmp_path: Path) -> str:
 def test_system_prompt_appends_modalities_then_topics(tmp_path: Path, system: str) -> None:
     assert system == (
         "Extract statements.\n\nModalities:\n- must: required\n- should: advised\n- may: allowed\n"
-        "\nTopics:\n- kyc: d\n- age_verification: d\n"
+        "\nTopics:\n- labelling: d\n- allergens: d\n"
     )
-    changed = dataclasses.replace(DOMAIN, topics=(Topic("kyc", "Identity", "other"), DOMAIN.topics[1]))
+    changed = dataclasses.replace(DOMAIN, topics=(Topic("labelling", "Labelling", "other"), DOMAIN.topics[1]))
     assert statements.prompt_version(statements.system_prompt(tmp_path / "extract.md", changed)) != (
         statements.prompt_version(system)
     )
@@ -83,42 +83,47 @@ def test_system_prompt_appends_modalities_then_topics(tmp_path: Path, system: st
 
 @pytest.mark.parametrize(
     "quote",
-    ["Spillemyndigheden skal", "Spille-myndigheden skal", "Spille- myndigheden skal", "Spillemyndig heden skal"],
+    [
+        "Sikkerhedsstyrelsen skal",
+        "Sikkerheds-styrelsen skal",
+        "Sikkerheds- styrelsen skal",
+        "Sikkerhedsstyrel sen skal",
+    ],
 )
 def test_validate_accepts_quote_across_hyphenated_line_break(quote: str) -> None:
-    text = "Tilladelsesindehaver og Spille-\nmyndigheden skal aftale."
-    record = {**RECORD, "verbatim_quote": quote, "applies_to": ["casino"]}
+    text = "Virksomheden og Sikkerheds-\nstyrelsen skal aftale."
+    record = {**RECORD, "verbatim_quote": quote, "applies_to": ["food"]}
     assert statements.validate(record, text, SOURCE, TOPIC_IDS, MODALITIES).verbatim_quote == quote
 
 
 def test_validate_accepts_hyphen_after_space_at_line_break() -> None:
-    text = "under licenspe -\nrioden gäller"
-    record = {**RECORD, "verbatim_quote": "under licensperioden gäller"}
+    text = "under garantipe -\nrioden gäller"
+    record = {**RECORD, "verbatim_quote": "under garantiperioden gäller"}
     assert statements.validate(record, text, SOURCE, TOPIC_IDS, MODALITIES)
 
 
 def test_validate_accepts_quote_across_line_breaks() -> None:
-    record = {**RECORD, "verbatim_quote": "identity where— (a) the person"}
+    record = {**RECORD, "verbatim_quote": "product where— (a) the product"}
     kept = statements.validate(record, TEXT, SOURCE, TOPIC_IDS, MODALITIES)
     assert (kept.verbatim_quote, kept.topics, kept.applies_to) == (
-        "identity where— (a) the person",
-        ("kyc", "age_verification"),
-        ("casino",),
+        "product where— (a) the product",
+        ("labelling", "allergens"),
+        ("food",),
     )
 
 
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"verbatim_quote": "the person provides a photo document"}, "not found in the section"),
+        ({"verbatim_quote": "the product contains an allergen in a schedule"}, "not found in the section"),
         ({"verbatim_quote": "within 23 days"}, "not found in the section"),
         ({"verbatim_quote": "x" * 1001}, "longer than 1000"),
         ({"verbatim_quote": " "}, "verbatim_quote missing"),
         ({"summary": ""}, "summary missing"),
         ({"modality": "shall"}, "modality 'shall'"),
-        ({"topics": ["kyc", "payments"]}, "known topic ids"),
+        ({"topics": ["labelling", "payments"]}, "known topic ids"),
         ({"topics": []}, "known topic ids"),
-        ({"applies_to": ["lottery"]}, "subset of"),
+        ({"applies_to": ["cosmetics"]}, "subset of"),
     ],
 )
 def test_validate_rejects(change: dict[str, object], message: str) -> None:
@@ -161,7 +166,7 @@ class FakeModel:
         self.messages: list[str] = []
 
     def __call__(self, system: str, text: str, model: str) -> str:
-        assert "Topics:\n- kyc: d\n- age_verification: d\n" in system
+        assert "Topics:\n- labelling: d\n- allergens: d\n" in system
         assert model == "m"
         self.messages.append(text)
         return self.outputs.pop(0)
@@ -181,13 +186,13 @@ def test_extract_stores_valid_records_and_caches(conn: sqlite3.Connection, syste
     assert (report.sections, report.called, report.cached, report.statements) == (1, 1, 0, 1)
     assert report.rejected == ["3: verbatim_quote not found in the section: 'invented text'"]
     [message] = model.messages
-    assert "Section: 3\nHeadings: S.I.\n\n<section>\n3. A licensee" in message
+    assert "Section: 3\nHeadings: S.I.\n\n<section>\n3. A producer" in message
     assert "front matter" not in message
 
     rows = conn.execute("SELECT id, modality, applies_to, model, created_at FROM statements").fetchall()
-    assert rows == [("ie-si@v1#0001/1", "may", '["casino"]', "m", "2026-09-24T00:00:00Z")]
+    assert rows == [("ie-si@v1#0001/1", "may", '["food"]', "m", "2026-09-24T00:00:00Z")]
     topics = conn.execute("SELECT topic_id FROM statement_topics ORDER BY topic_id").fetchall()
-    assert topics == [("age_verification",), ("kyc",)]
+    assert topics == [("allergens",), ("labelling",)]
 
     again = run(conn, system, FakeModel())  # no outputs left: a model call would fail
     assert (again.cached, again.called, again.statements) == (1, 0, 1)
@@ -199,7 +204,7 @@ def test_extract_matching_skips_other_sections(conn: sqlite3.Connection, system:
     [report] = statements.extract_all(conn, [SOURCE], DOMAIN, system, "m", 1, FakeModel(), matching=r"(?i)duty")
     assert (report.sections, report.called, report.failed) == (0, 0, [])
     model = FakeModel(json.dumps({"statements": [RECORD]}))
-    [report] = statements.extract_all(conn, [SOURCE], DOMAIN, system, "m", 1, model, matching=r"A licensee")
+    [report] = statements.extract_all(conn, [SOURCE], DOMAIN, system, "m", 1, model, matching=r"A producer")
     assert (report.sections, report.called, report.statements) == (1, 1, 1)
 
 
@@ -230,7 +235,7 @@ def test_extract_retries_once_then_reports_failure(
 def test_cli_extract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     from kb.cli import main
 
-    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["casino", "sports"]}
+    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["food", "toys"]}
     (tmp_path / "sources.yaml").write_text(yaml.safe_dump([entry]), encoding="utf-8")
     (tmp_path / "domain.yaml").write_text(domain_yaml(DOMAIN), encoding="utf-8")
     (tmp_path / "extract.md").write_text("Extract statements.\n", encoding="utf-8")
@@ -262,7 +267,7 @@ def test_cli_extract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: py
     assert out.rstrip().endswith("1 statements, 0 rejected, 0 sections failed")
 
     monkeypatch.setattr(statements, "call_pi", FakeModel())  # no outputs: any model call would fail
-    assert main([*args, "--matching", "(?i)betting duty"]) == 0
+    assert main([*args, "--matching", "(?i)excise duty"]) == 0
     assert capsys.readouterr().out.rstrip().endswith("0 statements, 0 rejected, 0 sections failed")
     conn = db.connect(database)
     assert conn.execute("SELECT count(*) FROM statements").fetchone() == (1,)  # unmatched section kept
@@ -304,6 +309,6 @@ def test_call_pi_passes_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_message() -> None:
     assert statements.message(SOURCE, "3", [], "Advertisers should comply.") == (
-        "Document: S.I. 315 (GRAI)\nType: regulation\nLanguage: en\nTags: casino, sports\nSection: 3\nHeadings: -\n\n"
+        "Document: S.I. 315 (FSAI)\nType: regulation\nLanguage: en\nTags: food, toys\nSection: 3\nHeadings: -\n\n"
         "<section>\nAdvertisers should comply.\n</section>"
     )
