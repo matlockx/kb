@@ -7,7 +7,7 @@ import statistics
 import sys
 from pathlib import Path
 
-from kb import db, domain, evaluate, extract, fetch, index, parse, setup, sources, statements
+from kb import catalog, db, domain, evaluate, extract, fetch, index, parse, setup, sources, statements
 
 DOWNLOADS = Path("downloads")
 INGEST_SCRIPT = "ingest.sh"  # written into the downloads folder, beside the per-source folders
@@ -154,6 +154,45 @@ def main(argv: list[str] | None = None) -> int:
     cmd.add_argument(
         "--omp-config", type=Path, default=setup.OMP_MCP, help="omp MCP config to register in (default: %(default)s)"
     )
+    shelf = os.environ.get("KB_CATALOG") or None  # empty would mean the current directory
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument(
+        "--catalog",
+        type=Path,
+        default=shelf,
+        required=shelf is None,
+        help="catalog directory, e.g. a git clone or a synced cloud folder (default: $KB_CATALOG)",
+    )
+    cmd = commands.add_parser(
+        "publish",
+        parents=[shared],
+        help="copy this knowledge base into a catalog to share it",
+        description="Copy domain.yaml, sources.yaml, prompts/, eval/ and a snapshot of the database (no raw "
+        "downloads) into CATALOG/NAME, replacing the previous copy. In a git clone the catalog is pulled first and "
+        "the copy committed and pushed. Exits 1 when the knowledge base is not built or the push failed.",
+    )
+    cmd.add_argument("--name", help="name in the catalog (default: the directory name)")
+    commands.add_parser(
+        "catalog",
+        parents=[shared],
+        help="list the knowledge bases in a catalog",
+        description="Print every knowledge base in the catalog with its database size, whether ~/kbs holds a copy, "
+        "and its name from domain.yaml. A git catalog is pulled first.",
+    )
+    cmd = commands.add_parser(
+        "pull",
+        parents=[shared],
+        help="copy a knowledge base from a catalog and register it",
+        description="Copy CATALOG/NAME into ~/kbs/NAME, download the embedding model when it is not cached, and "
+        "offer to register NAME as an MCP server in omp's mcp.json. An existing knowledge base is replaced only "
+        "with --force; raw/ and other local files are kept. A git catalog is pulled first.",
+    )
+    cmd.add_argument("name", help="knowledge base name in the catalog")
+    cmd.add_argument("--dir", type=Path, help="target directory (default: ~/kbs/NAME)")
+    cmd.add_argument("--force", action="store_true", help="replace an existing knowledge base")
+    cmd.add_argument(
+        "--omp-config", type=Path, default=setup.OMP_MCP, help="omp MCP config to register in (default: %(default)s)"
+    )
     args = parser.parse_args(argv)
     if args.home is not None:
         try:
@@ -163,6 +202,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     if args.command == "setup":
         return setup.setup(args.name, args.dir, input, main, args.omp_config)
+    if args.command == "publish":
+        return catalog.publish(Path.cwd(), args.catalog, args.name or Path.cwd().name)
+    if args.command == "catalog":
+        return catalog.show(args.catalog)
+    if args.command == "pull":
+        return catalog.pull(args.name, args.catalog, args.dir, args.force, input, args.omp_config)
     if args.command == "index":
         return run_index(args.db)
     if args.command == "eval":

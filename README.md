@@ -126,6 +126,37 @@ claude mcp add running -s user -- uv run --project ~/github/reg --quiet kb -C ~/
 omp also imports Claude Code's user-level servers, so register each server in
 one place only: the same name in both makes one shadow the other.
 
+## Sharing knowledge bases between devices
+
+A catalog is a directory with one folder per built knowledge base: its
+`domain.yaml`, `sources.yaml`, `prompts/`, `eval/` and a snapshot of
+`data/kb.db`. Raw downloads stay on the device that built it. Use a folder
+synced by a cloud drive, or a clone of a git repository: in a git clone every
+command pulls first, and `publish` commits and pushes. GitHub rejects files
+over 100 MB, and every published version stays in the history, so a git
+catalog suits small knowledge bases.
+
+```sh
+set -Ux KB_CATALOG ~/kb-catalog            # or --catalog DIR on each command
+kb -C ~/kbs/running publish                # copy it in as "running" (--name to rename)
+kb catalog                                 # list: name, size, whether ~/kbs has it
+kb pull running                            # copy into ~/kbs/running and offer to register
+```
+
+`publish` copies the database with `VACUUM INTO`, so the snapshot is
+consistent even while a server reads it, and replaces the previous copy only
+once the new one is complete. `pull` downloads the embedding model when it is
+not cached (the MCP server loads it offline), then asks whether to register
+the MCP server as `setup` does. A knowledge base already in the target is
+replaced only with `--force`; its `raw/` stays.
+
+Build and publish each knowledge base from one device. A pulled copy is a full
+knowledge base you can rebuild, but two devices publishing the same name
+overwrite each other.
+
+The database holds the full text of every source. Keep a catalog private
+unless the sources' licences allow redistribution.
+
 ## How it works
 
 1. `sources.yaml` lists every document by hand: publisher, title, URL,

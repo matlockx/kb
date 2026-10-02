@@ -32,6 +32,7 @@ line-length = 120
 select = ["E", "W", "F", "I", "N", "UP", "S", "B", "A", "C4", "DTZ", "T20", "SIM", "ARG", "PTH", "ERA", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
+"src/kb/catalog.py" = ["T201"]
 "src/kb/cli.py" = ["T201"]
 "src/kb/evaluate.py" = ["T201"]
 "src/kb/setup.py" = ["T201"]
