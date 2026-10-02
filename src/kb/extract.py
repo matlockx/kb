@@ -3,12 +3,15 @@
 import codecs
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import urldefrag, urljoin, urlparse
 
-from pypdf import PdfReader
+from pypdf import PageObject, PdfReader
+from pypdf.errors import PyPdfError
 
 HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 
@@ -21,14 +24,43 @@ class Block:
     page: int | None = None  # 1-based, PDFs only
 
 
-def extract(path: Path, content_type: str | None) -> list[Block]:
-    """Blocks of one stored download; raise ValueError for a format with no reader."""
+def extract(path: Path, content_type: str | None, skip_classes: Collection[str] = ()) -> list[Block]:
+    """Blocks of one stored download; raise ValueError for a format with no reader.
+
+    HTML elements carrying any of skip_classes as a class are left out with their content; PDFs ignore it.
+    """
     data = path.read_bytes()
     if content_type == "application/pdf" or data.startswith(b"%PDF"):
         return from_pdf(data)
     if content_type is None or content_type in HTML_TYPES:
-        return from_html(data.decode(_html_charset(data), errors="replace"))
+        return from_html(data.decode(_html_charset(data), errors="replace"), skip_classes)
     raise ValueError(f"no reader for content type {content_type!r}; add one to kb/extract.py")
+
+
+def links(path: Path, content_type: str | None, base: str, skip_classes: Collection[str] = ()) -> list[str]:
+    """Absolute http(s) URLs a stored download links to, in document order, each once and without its #fragment.
+
+    Relative links resolve against base; links into base itself are left out. HTML links come from the text the
+    HTML reader keeps (no navigation or footers, no element carrying one of skip_classes), PDF links from the pages'
+    URI link annotations. Raise ValueError for a format with no reader or a PDF that does not parse.
+    """
+    data = path.read_bytes()
+    if content_type == "application/pdf" or data.startswith(b"%PDF"):
+        try:
+            found = [str(uri) for page in PdfReader(BytesIO(data)).pages for uri in _pdf_uris(page)]
+        except PyPdfError as exc:
+            raise ValueError(f"unreadable PDF: {exc}") from exc
+    elif content_type is None or content_type in HTML_TYPES:
+        found = _read_html(data.decode(_html_charset(data), errors="replace"), skip_classes).hrefs
+    else:
+        raise ValueError(f"no reader for content type {content_type!r}; add one to kb/extract.py")
+    own = urldefrag(base).url
+    urls: dict[str, None] = {}
+    for href in found:
+        url = urldefrag(urljoin(base, href.strip())).url
+        if urlparse(url).scheme in {"http", "https"} and url != own:
+            urls.setdefault(url)
+    return list(urls)
 
 
 def _html_charset(data: bytes) -> str:
@@ -88,15 +120,17 @@ class _PageForm(HTMLParser):
 
 
 class _HTMLBlocks(HTMLParser):
-    def __init__(self, page_form: int | None = None) -> None:
+    def __init__(self, page_form: int | None = None, skip_classes: Collection[str] = ()) -> None:
         super().__init__(convert_charrefs=True)
         self.blocks: list[Block] = []
+        self.hrefs: list[str] = []  # href of every <a> in the text read, skipped regions left out
         self.buffer: list[str] = []
         self.level: int | None = None
         self.skip_depth = 0
         self.stack: list[str] = []
         self.page_form = page_form  # ASP.NET wraps the whole page in this form; other forms are skipped
         self.forms = 0
+        self.skip_classes = frozenset(skip_classes)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in VOID_TAGS:
@@ -111,11 +145,16 @@ class _HTMLBlocks(HTMLParser):
         # A cookie banner is skipped by its class; <html> and <body> carry state classes such as
         # "cookies-agreement-present" (Human Kinetics) and wrap the whole page.
         banner = "cookie" in classes and tag not in {"html", "body"}
-        skipping = self.skip_depth or (tag in SKIP_TAGS and not page_form) or hidden or banner
+        skipped_class = bool(self.skip_classes) and any(
+            k == "class" and not self.skip_classes.isdisjoint((v or "").split()) for k, v in attrs
+        )
+        skipping = self.skip_depth or (tag in SKIP_TAGS and not page_form) or hidden or banner or skipped_class
         self.stack.append(tag)
         if skipping:
             self.skip_depth += 1
             return
+        if tag == "a":
+            self.hrefs.extend(v for k, v in attrs if k == "href" and v)
         if tag in BLOCK_TAGS:
             self.flush()
             if len(tag) == 2 and tag[0] == "h" and tag[1].isdigit():
@@ -147,8 +186,13 @@ class _HTMLBlocks(HTMLParser):
         self.level = None
 
 
-def from_html(html: str) -> list[Block]:
-    """Block text from the page's <main> (or <body>), without navigation, footers and cookie banners."""
+def from_html(html: str, skip_classes: Collection[str] = ()) -> list[Block]:
+    """Block text from the page's <main> (or <body>), without navigation, footers, cookie banners and elements
+    carrying one of skip_classes."""
+    return _read_html(html, skip_classes).blocks
+
+
+def _read_html(html: str, skip_classes: Collection[str] = ()) -> _HTMLBlocks:
     for tag in ("main", "body"):
         match = re.search(rf"<{tag}[\s>].*?</{tag}>", html, re.S | re.I)
         if match:
@@ -160,11 +204,11 @@ def from_html(html: str) -> list[Block]:
         finder.feed(html)
         finder.close()
         page_form = finder.found
-    parser = _HTMLBlocks(page_form)
+    parser = _HTMLBlocks(page_form, skip_classes)
     parser.feed(html)
     parser.close()
     parser.flush()
-    return parser.blocks
+    return parser
 
 
 # --- PDF --------------------------------------------------------------------
@@ -181,6 +225,18 @@ def from_pdf(data: bytes) -> list[Block]:
             if text and _shape(text) not in repeated:
                 blocks.append(Block(text, page=number))
     return blocks
+
+
+def _pdf_uris(page: PageObject) -> list[object]:
+    """URIs of the page's link annotations (/A /URI); other annotations and actions are left out."""
+    uris = []
+    annots = page.get("/Annots")
+    for ref in annots.get_object() if annots is not None else []:
+        action = ref.get_object().get("/A")
+        uri = action.get_object().get("/URI") if action is not None else None
+        if uri is not None:
+            uris.append(uri)
+    return uris
 
 
 def _shape(line: str) -> str:

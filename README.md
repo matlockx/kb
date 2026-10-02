@@ -155,6 +155,7 @@ kb fetch             # download every source into raw/ (files in downloads/ firs
 kb fetch --source ID # one source (repeatable)
 kb parse             # split current versions into section chunks
 kb parse --source ID --sample 3   # spot-check three random chunks
+kb links ID          # links in a source's current version, to pick new sources
 kb extract --source ID            # statements via Claude (pi -p)
 kb extract --matching '(?i)taper' # only sections whose text matches
 kb index             # full-text index and embeddings (downloads bge-m3 once)
@@ -181,11 +182,27 @@ operating system's trust store. Only `https` URLs are accepted. Requests send
 
 A block or challenge page must not hide a good copy, so these fail too and the
 download is discarded: a Cloudflare challenge (the `cf-mitigated` header or its
-challenge script), HTML where the current version is a PDF or another
-non-HTML document, and a download with no body sections where the current
-version has some. A Cloudflare challenge needs a browser. If the page really
-changed that way, delete the old versions (and the statements citing them, as
-for re-chunking below) to accept it.
+challenge script), an AWS WAF challenge (the `x-amzn-waf-action` header on an
+empty 202, as EUR-Lex answers), HTML where the current version is a PDF or
+another non-HTML document, and a download with no body sections where the
+current version has some. A challenge needs a browser that runs its script; no
+HTTP library gets past it. If the page really changed that way, delete the old
+versions (and the statements citing them, as for re-chunking below) to accept
+it.
+
+EUR-Lex documents are also served, without the challenge, by the Publications
+Office's Cellar repository. Ask it for the CELEX number with
+`Accept: application/xhtml+xml` and `Accept-Language: eng`; it redirects to a
+`http://` Cellar URL, which works over `https://` too:
+
+```sh
+curl -sI -H 'Accept: application/xhtml+xml' -H 'Accept-Language: eng' \
+  https://publications.europa.eu/resource/celex/32009L0024 | grep -i location
+```
+
+Put that URL, with `https://`, in `sources.yaml`. It names one manifestation,
+so a later amendment is not picked up as `changed`; look the CELEX number up
+again to move on.
 
 ### Downloading by hand
 
@@ -213,6 +230,14 @@ as a download, and is removed from its folder once stored; a file that fails
 file, a challenge page, or a refused block page) stays where it is. Add
 `downloads/` to the `.gitignore` of a knowledge base created before it existed.
 
+### Links
+
+`kb links ID` prints the absolute `http(s)` URLs the current version of a
+source links to, in document order and each once: `<a href>` in the HTML text
+the parser keeps (navigation and footers left out) and URI link annotations in
+a PDF. Fragments are dropped and links into the source itself left out. Add the
+ones worth keeping to `sources.yaml` by hand; `kb fetch` follows no links.
+
 ## Parsing
 
 `kb parse` extracts text from the current version of each source and splits
@@ -224,11 +249,15 @@ message naming the reader to add in `src/kb/extract.py`. Sources use the
 volume) and `section_label` / `chapter_label` (normalise refs). Patterns see
 HTML headings in Markdown form (`## 1. Introduction`). `skip_sections`, a
 regex matched at the start of a section ref, keeps those sections searchable
-but out of extraction. Sources without a pattern fall back to headings, or to
-pages for PDFs. Forms are skipped, except the ASP.NET page form (the one
-holding `__VIEWSTATE`), which wraps the whole page. HTML is decoded with the
-charset its `<meta>` tag declares, else as UTF-8 or, when the bytes are not
-valid UTF-8, windows-1252. Sections longer than 12 000 characters are split
+but out of extraction. `skip_classes`, a list of HTML class names, drops every
+element carrying one of them, content included, before patterns run; on
+legislation.gov.uk, `[LegCommentaryLink]` removes the amendment markers glued
+to section numbers (`X1180` becomes `180`). Sources without a pattern fall back
+to headings, or to pages for PDFs. Forms are skipped, except the ASP.NET page
+form (the one holding `__VIEWSTATE`), which wraps the whole page. HTML is
+decoded with the charset its `<meta>` tag declares, else as UTF-8 or, when the
+bytes are not valid UTF-8, windows-1252. Sections longer than 12 000 characters
+are split
 into `(part n)` chunks.
 
 Re-parsing replaces a version's chunks, and refuses to once statements cite

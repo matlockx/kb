@@ -235,7 +235,7 @@ def test_extract_retries_once_then_reports_failure(
 def test_cli_extract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     from kb.cli import main
 
-    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "")} | {"tags": ["food", "toys"]}
+    entry = {k: v for k, v in SOURCE.__dict__.items() if v not in (None, "", ())} | {"tags": ["food", "toys"]}
     (tmp_path / "sources.yaml").write_text(yaml.safe_dump([entry]), encoding="utf-8")
     (tmp_path / "domain.yaml").write_text(domain_yaml(DOMAIN), encoding="utf-8")
     (tmp_path / "extract.md").write_text("Extract statements.\n", encoding="utf-8")

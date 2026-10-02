@@ -10,6 +10,7 @@
 #   section_label, chapter_label      re.Match.expand templates rewriting refs
 #   first_chapter                     ref prefix before chapter_pattern first matches
 #   skip_sections                     regex on refs that extraction skips (still searchable)
+#   skip_classes                      list of HTML class names whose elements parse leaves out
 # Patterns see HTML headings in Markdown form ("## 1. Introduction"). Without a
 # pattern, parse splits at HTML headings, else at PDF pages.
 #

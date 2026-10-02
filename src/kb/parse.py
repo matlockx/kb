@@ -36,7 +36,7 @@ def current_version(conn: sqlite3.Connection, document_id: str) -> tuple[str, st
 def sections_of(path: Path, content_type: str | None, source: Source) -> list[Section]:
     """Split one stored download into the sections parse stores for it."""
     return split(
-        extract(path, content_type),
+        extract(path, content_type, source.skip_classes),
         source.section_pattern,
         source.chapter_pattern,
         source.body_start,
