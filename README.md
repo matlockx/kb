@@ -176,7 +176,16 @@ download whose body sections (preamble excluded) parse identically to the
 current version's is a markup-only change (a print date, a breadcrumb): it is
 reported as unchanged and discarded. A failed download leaves the source's
 versions untouched and makes the command exit 1. TLS is verified against the
-operating system's trust store. Only `https` URLs are accepted.
+operating system's trust store. Only `https` URLs are accepted. Requests send
+`Accept-Language: *`, without which several bot filters answer 403.
+
+A block or challenge page must not hide a good copy, so these fail too and the
+download is discarded: a Cloudflare challenge (the `cf-mitigated` header or its
+challenge script), HTML where the current version is a PDF or another
+non-HTML document, and a download with no body sections where the current
+version has some. A Cloudflare challenge needs a browser; download such a
+document by hand. If the page really changed that way, delete the old versions
+(and the statements citing them, as for re-chunking below) to accept it.
 
 ## Parsing
 
@@ -190,9 +199,11 @@ volume) and `section_label` / `chapter_label` (normalise refs). Patterns see
 HTML headings in Markdown form (`## 1. Introduction`). `skip_sections`, a
 regex matched at the start of a section ref, keeps those sections searchable
 but out of extraction. Sources without a pattern fall back to headings, or to
-pages for PDFs. HTML is decoded with the charset its `<meta>` tag declares,
-else as UTF-8 or, when the bytes are not valid UTF-8, windows-1252. Sections
-longer than 12 000 characters are split into `(part n)` chunks.
+pages for PDFs. Forms are skipped, except the ASP.NET page form (the one
+holding `__VIEWSTATE`), which wraps the whole page. HTML is decoded with the
+charset its `<meta>` tag declares, else as UTF-8 or, when the bytes are not
+valid UTF-8, windows-1252. Sections longer than 12 000 characters are split
+into `(part n)` chunks.
 
 Re-parsing replaces a version's chunks, and refuses to once statements cite
 them. To re-chunk such a source after changing its patterns, back up the

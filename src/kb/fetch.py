@@ -16,10 +16,13 @@ from typing import Any, Literal
 
 import truststore
 
+from kb.extract import HTML_TYPES
 from kb.parse import sections_of
 from kb.sources import Source
 
-USER_AGENT = "kb/0.1"
+# Some bot filters (cdc.gov, mayoclinic.org, mdpi.com) answer 403 to a request without Accept-Language,
+# whatever its User-Agent; "*" leaves the server's language choice as it was without the header.
+HEADERS = {"User-Agent": "kb/0.1", "Accept-Language": "*"}
 # Verify against the OS trust store, as curl and browsers do; the OpenSSL bundle
 # Python ships with can lack roots that some publishers use (e.g. HARICA, Sectigo R46).
 TLS = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -53,9 +56,9 @@ Opener = Callable[..., Any]  # urllib.request.urlopen or a test double
 
 
 def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int = MAX_BYTES) -> Download:
-    """GET url; raise FetchError on HTTP or network failure, a non-https redirect, or an empty, truncated or
-    oversized body."""
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})  # noqa: S310 - registry enforces https
+    """GET url; raise FetchError on HTTP or network failure, a non-https redirect, a bot challenge, or an empty,
+    truncated or oversized body."""
+    request = urllib.request.Request(url, headers=HEADERS)  # noqa: S310 - registry enforces https
     try:
         with opener(request, timeout=TIMEOUT_S, context=TLS) as response:
             final = response.geturl()
@@ -64,7 +67,8 @@ def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int =
             body = response.read(max_bytes + 1)
             headers = response.headers
     except urllib.error.HTTPError as exc:
-        raise FetchError(f"HTTP {exc.code}") from exc
+        challenge = " (Cloudflare challenge)" if exc.headers.get("cf-mitigated") == "challenge" else ""
+        raise FetchError(f"HTTP {exc.code}{challenge}") from exc
     except (OSError, http.client.HTTPException) as exc:
         raise FetchError(str(getattr(exc, "reason", exc))) from exc
     if len(body) > max_bytes:
@@ -76,6 +80,8 @@ def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int =
     if length and length.isdigit() and int(length) != len(body):
         raise FetchError(f"truncated: got {len(body)} of {length} bytes")
     content_type = headers.get("Content-Type")
+    if headers.get("cf-mitigated") == "challenge" or b"_cf_chl_opt" in body:
+        raise FetchError("Cloudflare challenge page")
     return Download(
         body=body,
         content_type=content_type.split(";")[0].strip().lower() if content_type else None,
@@ -88,7 +94,9 @@ def store(conn: sqlite3.Connection, source: Source, got: Download, raw_dir: Path
     """Write the body under raw_dir and record it; the current version is the one checked most recently.
 
     A download whose body sections (preamble excluded) match the current version's is a markup-only change:
-    the current version is marked checked and the download is discarded.
+    the current version is marked checked and the download is discarded. A download that looks like a block
+    or challenge page next to the current version (HTML where the current version is a document, or no body
+    sections where the current version has some) is refused: it fails and is discarded.
     """
     sha = hashlib.sha256(got.body).hexdigest()
     rel = Path(source.id) / f"{sha}.{EXTENSIONS.get(got.content_type or '', 'bin')}"
@@ -102,15 +110,27 @@ def store(conn: sqlite3.Connection, source: Source, got: Download, raw_dir: Path
         "ORDER BY last_checked_at DESC, fetched_at DESC LIMIT 1",
         (source.id,),
     ).fetchone()
-    if current is not None and current[0] != sha and _same_body(source, raw_dir / current[1], current[2], path, got):
-        with conn:
-            conn.execute(
-                "UPDATE document_versions SET last_checked_at = ? WHERE document_id = ? AND sha256 = ?",
-                (now, source.id, current[0]),
-            )
-        if wrote:
-            path.unlink()
-        return Result(source.id, "unchanged", f"{current[0][:12]} (markup-only change {sha[:12]} ignored)")
+    if current is not None and current[0] != sha:
+        before = _body(source, raw_dir / current[1], current[2])
+        after = _body(source, path, got.content_type)
+        if before and before == after:
+            with conn:
+                conn.execute(
+                    "UPDATE document_versions SET last_checked_at = ? WHERE document_id = ? AND sha256 = ?",
+                    (now, source.id, current[0]),
+                )
+            if wrote:
+                path.unlink()
+            return Result(source.id, "unchanged", f"{current[0][:12]} (markup-only change {sha[:12]} ignored)")
+        problem = None
+        if got.content_type in HTML_TYPES and current[2] is not None and current[2] not in HTML_TYPES:
+            problem = f"got {got.content_type} where {current[0][:12]} is {current[2]}"
+        elif before and after == []:
+            problem = f"{sha[:12]} has no body sections where {current[0][:12]} has"
+        if problem:
+            if wrote:
+                path.unlink()
+            return Result(source.id, "failed", f"{problem}; a block page? current version kept")
     with conn:
         known = conn.execute(
             "UPDATE document_versions SET last_checked_at = ? WHERE document_id = ? AND sha256 = ?",
@@ -140,16 +160,13 @@ def store(conn: sqlite3.Connection, source: Source, got: Download, raw_dir: Path
     return Result(source.id, "changed", f"{current[0][:12]} -> {sha[:12]}")
 
 
-def _same_body(source: Source, old: Path, old_type: str | None, new: Path, got: Download) -> bool:
-    """Whether both files split into the same body sections; the preamble (navigation, print dates) is ignored."""
+def _body(source: Source, path: Path, content_type: str | None) -> list[tuple[str, str]] | None:
+    """(ref, text) of the file's body sections, the preamble (navigation, print dates) left out; None when it
+    does not parse (parse reports the error)."""
     try:
-        before, after = (
-            [(s.ref, s.text) for s in sections_of(p, t, source) if not s.ref.startswith("(preamble)")]
-            for p, t in ((old, old_type), (new, got.content_type))
-        )
-    except Exception:  # a file that does not parse is never "the same"; parse reports the error
-        return False
-    return bool(before) and before == after
+        return [(s.ref, s.text) for s in sections_of(path, content_type, source) if not s.ref.startswith("(preamble)")]
+    except Exception:
+        return None
 
 
 def fetch_all(
