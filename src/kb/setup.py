@@ -60,7 +60,7 @@ def create(name: str, home: Path, ask: Ask) -> None:
         target.write_text(text, encoding="utf-8")
     gitignore = home / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text("data/\nraw/\n", encoding="utf-8")
+        gitignore.write_text("data/\nraw/\ndownloads/\n", encoding="utf-8")
     if shutil.which("git") and not (home / ".git").exists() and _confirm(ask, f"Make {home} a git repository?"):
         subprocess.run(["git", "init", "-q", str(home)], check=False)  # noqa: S603, S607
     print(f"Created {home}.")

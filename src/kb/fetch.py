@@ -29,6 +29,8 @@ TLS = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 TIMEOUT_S = 60
 MAX_BYTES = 50 * 1024 * 1024
 EXTENSIONS = {"application/pdf": "pdf", "text/html": "html", "application/xhtml+xml": "html"}
+SAVED_TYPES = {".pdf": "application/pdf", ".html": "text/html", ".htm": "text/html", ".xhtml": "application/xhtml+xml"}
+CHALLENGE_MARK = b"_cf_chl_opt"  # the script of a Cloudflare challenge page
 
 Status = Literal["new", "changed", "unchanged", "failed"]
 
@@ -80,7 +82,7 @@ def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int =
     if length and length.isdigit() and int(length) != len(body):
         raise FetchError(f"truncated: got {len(body)} of {length} bytes")
     content_type = headers.get("Content-Type")
-    if headers.get("cf-mitigated") == "challenge" or b"_cf_chl_opt" in body:
+    if headers.get("cf-mitigated") == "challenge" or CHALLENGE_MARK in body:
         raise FetchError("Cloudflare challenge page")
     return Download(
         body=body,
@@ -169,25 +171,70 @@ def _body(source: Source, path: Path, content_type: str | None) -> list[tuple[st
         return None
 
 
+def saved_by_hand(folder: Path) -> Path | None:
+    """The one file saved by hand into folder, dotfiles ignored; None when there is none.
+
+    Raise FetchError when there are several, the file type has no reader, or the folder cannot be read.
+    """
+    if not folder.is_dir():
+        return None
+    try:
+        files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
+    except OSError as exc:
+        raise FetchError(f"{folder}: {exc.strerror}") from exc
+    if not files:
+        return None
+    if len(files) > 1:
+        raise FetchError(f"{len(files)} files in {folder}; keep one of {', '.join(p.name for p in files)}")
+    if files[0].suffix.lower() not in SAVED_TYPES:
+        raise FetchError(f"{files[0]} is not a {', '.join(SAVED_TYPES)} file")
+    return files[0]
+
+
 def fetch_all(
     conn: sqlite3.Connection,
     sources: Iterable[Source],
     raw_dir: Path,
     get: Callable[[str], Download] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    inbox: Path | None = None,
 ) -> list[Result]:
-    """Fetch every source; a failure is reported and leaves that source's versions untouched."""
+    """Fetch every source; a failure is reported and leaves that source's versions untouched.
+
+    A file saved by hand into inbox/<source id>/ is stored instead of downloading the URL, and removed from the
+    inbox once it is stored (kept when it fails).
+    """
     get = get or download  # resolved per call, so a patched module-level download is honoured
     results = []
     for source in sources:
         try:
-            got = get(source.url)
+            saved = saved_by_hand(inbox / source.id) if inbox is not None else None
+            if saved is None:
+                got = get(source.url)
+            else:
+                got = Download(_read_saved(saved), SAVED_TYPES[saved.suffix.lower()], None, None)
         except FetchError as exc:
             results.append(Result(source.id, "failed", str(exc)))
             continue
         now = clock().isoformat(timespec="seconds").replace("+00:00", "Z")
-        results.append(store(conn, source, got, raw_dir, now))
+        result = store(conn, source, got, raw_dir, now)
+        if saved is not None and result.status != "failed":
+            saved.unlink()
+            result = Result(source.id, result.status, f"{result.detail} (saved by hand: {saved.name})")
+        results.append(result)
     return results
+
+
+def _read_saved(path: Path) -> bytes:
+    try:
+        body = path.read_bytes()
+    except OSError as exc:
+        raise FetchError(f"{path}: {exc.strerror}") from exc
+    if not body:
+        raise FetchError(f"{path} is empty")
+    if CHALLENGE_MARK in body:
+        raise FetchError(f"{path} is a Cloudflare challenge page")
+    return body
 
 
 def _write_atomic(path: Path, body: bytes) -> None:

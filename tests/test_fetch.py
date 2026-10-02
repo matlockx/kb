@@ -1,5 +1,6 @@
 import email.message
 import io
+import re
 import sqlite3
 import urllib.error
 from collections.abc import Iterator
@@ -186,19 +187,63 @@ def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
 
     monkeypatch.setattr(fetch, "download", fake_download)
     base = ["--db", str(tmp_path / "kb.db"), "--domain", str(domain), "fetch", "--file", str(registry)]
-    base += ["--raw", str(tmp_path / "raw")]
+    inbox = tmp_path / "downloads"
+    base += ["--raw", str(tmp_path / "raw"), "--downloads", str(inbox)]
 
     assert main(base) == 1
     out = capsys.readouterr().out
     assert "new       gb-act" in out
     assert "failed    gb-rts  HTTP 404" in out
-    assert out.rstrip().endswith("1 new, 0 changed, 0 unchanged, 1 failed")
+    assert "1 new, 0 changed, 0 unchanged, 1 failed\n" in out
+    assert f"  1  {inbox.resolve()}/gb-rts/  https://example.org/rts\n" in out  # the act downloaded: not listed
+    kb = f"kb -C {Path.cwd()} --db {(tmp_path / 'kb.db').resolve()} --domain {domain.resolve()}"
+    file, raw = f"--file {registry.resolve()}", f"--raw {(tmp_path / 'raw').resolve()}"
+    assert out.rstrip().endswith(  # every option this run changed is carried over, so the steps hit the same files
+        f"  {kb} fetch {file} {raw} --downloads {inbox.resolve()} --source gb-rts; "
+        f"{kb} parse {file} {raw} --source gb-rts; {kb} extract {file} --source gb-rts; {kb} index"
+    )
+    assert [p.name for p in inbox.iterdir()] == ["gb-rts"]  # the folder to save into exists
+
+    (inbox / "gb-rts" / "rts (1).pdf").write_bytes(b"%PDF-1.4 rts")
+    assert main([*base, "--source", "gb-rts"]) == 0
+    out = capsys.readouterr().out
+    assert "new       gb-rts" in out
+    assert "(saved by hand: rts (1).pdf)" in out
+    assert not list((inbox / "gb-rts").iterdir())  # stored under raw/, so removed from the inbox
+    assert [p.suffix for p in (tmp_path / "raw" / "gb-rts").iterdir()] == [".pdf"]
 
     assert main([*base, "--source", "gb-act"]) == 0
     assert capsys.readouterr().out.rstrip().endswith("0 new, 0 changed, 1 unchanged, 0 failed")
 
     assert main([*base, "--source", "nope"]) == 1
     assert "unknown source ids: nope" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("files", "message"),
+    [
+        ({"a.pdf": b"%PDF", "b.pdf": b"%PDF"}, "2 files in .*; keep one of a.pdf, b.pdf"),
+        ({"a.docx": b"PK"}, r"a\.docx is not a \.pdf, \.html, \.htm, \.xhtml file"),
+        ({"a.pdf": b""}, "a.pdf is empty"),
+        ({"a.html": b"<script>window._cf_chl_opt={}</script>"}, "a.html is a Cloudflare challenge page"),
+    ],
+)
+def test_unusable_file_saved_by_hand_fails_and_stays(
+    conn: sqlite3.Connection, tmp_path: Path, files: dict[str, bytes], message: str
+) -> None:
+    folder = tmp_path / "downloads" / SOURCE.id
+    folder.mkdir(parents=True)
+    for name, body in files.items():
+        (folder / name).write_bytes(body)
+
+    def offline(url: str) -> fetch.Download:
+        raise AssertionError(f"{url} must not be downloaded while a file is saved by hand")
+
+    [result] = fetch.fetch_all(conn, [SOURCE], tmp_path / "raw", get=offline, inbox=tmp_path / "downloads")
+    assert result.status == "failed"
+    assert re.search(message, result.detail)
+    assert sorted(p.name for p in folder.iterdir()) == sorted(files)
+    assert versions(conn) == []
 
 
 def html_download(preamble: str, body: str) -> fetch.Download:

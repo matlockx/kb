@@ -45,7 +45,7 @@ def test_create_writes_a_valid_template_with_the_answer(tmp_path: Path) -> None:
     assert defined.name == "running knowledge base"
     assert "Holds documents on the professional creation of running plans:" in defined.instructions
     assert "knowledge base on the professional creation of running plans," in (home / "prompts/extract.md").read_text()
-    assert (home / ".gitignore").read_text() == "data/\nraw/\n"
+    assert (home / ".gitignore").read_text() == "data/\nraw/\ndownloads/\n"
     assert (home / "eval/golden.yaml").exists()
     assert (home / "sources.yaml").exists()
     assert not (home / ".git").exists()
