@@ -40,7 +40,7 @@ def opener_returning(response: FakeResponse) -> fetch.Opener:
     def opener(request: object, timeout: float, context: object) -> FakeResponse:
         assert timeout == fetch.TIMEOUT_S
         assert context is fetch.TLS
-        assert request.get_header("User-agent") == fetch.USER_AGENT  # type: ignore[attr-defined]
+        assert request.get_header("Accept-language") == "*"  # type: ignore[attr-defined]
         return response
 
     return opener
@@ -61,6 +61,9 @@ def test_download_reads_body_and_headers() -> None:
     assert got == fetch.Download(b"%PDF", "application/pdf", '"v1"', "x")
 
 
+CHALLENGED = FakeResponse(b"", cf_mitigated="challenge").headers
+
+
 @pytest.mark.parametrize(
     ("opener", "message"),
     [
@@ -68,7 +71,12 @@ def test_download_reads_body_and_headers() -> None:
         (opener_returning(FakeResponse(b"")), "empty body"),
         (opener_returning(FakeResponse(b"12345")), "exceeds 4 bytes"),
         (opener_returning(FakeResponse(b"123", Content_Length="4")), "truncated: got 3 of 4 bytes"),
-        (opener_raising(urllib.error.HTTPError(SOURCE.url, 503, "down", email.message.Message(), None)), "HTTP 503"),
+        (opener_returning(FakeResponse(b"x", cf_mitigated="challenge")), "Cloudflare challenge page"),
+        (opener_raising(urllib.error.HTTPError(SOURCE.url, 503, "down", email.message.Message(), None)), "HTTP 503$"),
+        (
+            opener_raising(urllib.error.HTTPError(SOURCE.url, 403, "no", CHALLENGED, None)),
+            r"HTTP 403 \(Cloudflare challenge\)",
+        ),
         (opener_raising(urllib.error.URLError("no route")), "no route"),
         (opener_raising(TimeoutError("timed out")), "timed out"),
     ],
@@ -76,6 +84,12 @@ def test_download_reads_body_and_headers() -> None:
 def test_download_failures(opener: fetch.Opener, message: str) -> None:
     with pytest.raises(fetch.FetchError, match=message):
         fetch.download(SOURCE.url, opener=opener, max_bytes=4)
+
+
+def test_download_rejects_a_challenge_page_served_with_200() -> None:
+    page = b"<html><script>window._cf_chl_opt={cType: 'managed'}</script></html>"
+    with pytest.raises(fetch.FetchError, match="Cloudflare challenge page"):
+        fetch.download(SOURCE.url, opener=opener_returning(FakeResponse(page, Content_Type="text/html")))
 
 
 @pytest.fixture
@@ -214,3 +228,35 @@ def test_markup_only_change_keeps_the_current_version(conn: sqlite3.Connection, 
     )
     assert changed.status == "changed"
     assert len(versions(conn)) == 2
+
+
+CHALLENGE = fetch.Download(b"<html><body><p>Verifying you are human</p></body></html>", "text/html", None, None)
+
+
+@pytest.mark.parametrize(
+    "good",
+    [fetch.Download(b"%PDF-1.4", "application/pdf", None, None), html_download("Menu", "Labels must list allergens.")],
+    ids=["html-for-a-pdf", "no-body-sections"],
+)
+def test_block_page_does_not_replace_the_current_version(
+    conn: sqlite3.Connection, tmp_path: Path, good: fetch.Download
+) -> None:
+    raw = tmp_path / "raw"
+    ticks = iter(clock())
+    now = lambda: next(ticks).isoformat(timespec="seconds").replace("+00:00", "Z")  # noqa: E731
+    assert fetch.store(conn, SOURCE, good, raw, now()).status == "new"
+    before = versions(conn)
+    refused = fetch.store(conn, SOURCE, CHALLENGE, raw, now())
+    assert refused.status == "failed"
+    assert "current version kept" in refused.detail
+    assert versions(conn) == before
+    assert len(list(raw.rglob("*.*"))) == 1  # the refused download is discarded
+
+
+def test_html_may_replace_an_untyped_current_version(conn: sqlite3.Connection, tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    ticks = iter(clock())
+    now = lambda: next(ticks).isoformat(timespec="seconds").replace("+00:00", "Z")  # noqa: E731
+    untyped = fetch.Download(b"<body><p>Menu</p><h2>1 Scope</h2><p>Labels list allergens.</p></body>", None, None, None)
+    assert fetch.store(conn, SOURCE, untyped, raw, now()).status == "new"
+    assert fetch.store(conn, SOURCE, html_download("Menu", "Labels list nuts."), raw, now()).status == "changed"

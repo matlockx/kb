@@ -33,8 +33,12 @@ def test_html_keeps_main_text_and_heading_levels() -> None:
     ]
 
 
-def test_html_reads_inside_an_aspnet_page_form() -> None:
-    html = '<body><form id="aspnetForm"><h1>Rates</h1><form><p>Search</p></form><p>2%</p></form></body>'
+def test_html_reads_inside_the_aspnet_page_form_whatever_its_id() -> None:
+    html = (
+        '<body><form id="newsletter"><p>Subscribe</p></form><form method="post" id="form">'
+        '<div class="aspNetHidden"><input type="hidden" name="__VIEWSTATE" value="x"></div>'
+        "<h1>Rates</h1><form><p>Search</p></form><p>2%</p></form></body>"
+    )
     assert extract.from_html(html) == [Block("Rates", level=1), Block("2%")]
 
 

@@ -66,14 +66,37 @@ SKIP_TAGS = {"script", "style", "noscript", "nav", "header", "footer", "aside", 
 VOID_TAGS = {"br", "img", "hr", "meta", "link", "input", "source", "wbr"}
 
 
-class _HTMLBlocks(HTMLParser):
+class _PageForm(HTMLParser):
+    """Finds the ASP.NET page form: the outermost form holding the __VIEWSTATE field, numbered by start tag."""
+
     def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms = 0
+        self.open: list[int] = []
+        self.found: int | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "form":
+            self.forms += 1
+            self.open.append(self.forms)
+        elif tag == "input" and self.open and self.found is None and ("name", "__VIEWSTATE") in attrs:
+            self.found = self.open[0]
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self.open:
+            self.open.pop()
+
+
+class _HTMLBlocks(HTMLParser):
+    def __init__(self, page_form: int | None = None) -> None:
         super().__init__(convert_charrefs=True)
         self.blocks: list[Block] = []
         self.buffer: list[str] = []
         self.level: int | None = None
         self.skip_depth = 0
         self.stack: list[str] = []
+        self.page_form = page_form  # ASP.NET wraps the whole page in this form; other forms are skipped
+        self.forms = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in VOID_TAGS:
@@ -82,7 +105,9 @@ class _HTMLBlocks(HTMLParser):
             return
         classes = " ".join(v or "" for k, v in attrs if k in {"class", "id"}).lower()
         hidden = any(k == "hidden" or (k == "aria-hidden" and v == "true") for k, v in attrs)
-        page_form = tag == "form" and ("id", "aspnetForm") in attrs  # ASP.NET wraps the whole page in a form
+        if tag == "form":
+            self.forms += 1
+        page_form = tag == "form" and self.forms == self.page_form
         skipping = self.skip_depth or (tag in SKIP_TAGS and not page_form) or hidden or "cookie" in classes
         self.stack.append(tag)
         if skipping:
@@ -126,7 +151,13 @@ def from_html(html: str) -> list[Block]:
         if match:
             html = match.group(0)
             break
-    parser = _HTMLBlocks()
+    page_form = None
+    if "__VIEWSTATE" in html:
+        finder = _PageForm()
+        finder.feed(html)
+        finder.close()
+        page_form = finder.found
+    parser = _HTMLBlocks(page_form)
     parser.feed(html)
     parser.close()
     parser.flush()
