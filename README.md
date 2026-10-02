@@ -193,12 +193,18 @@ When sources fail, `kb fetch` ends with a numbered table: one line per failed
 source with its link and the folder to save the file into,
 `downloads/<source>/` (created for you; `--downloads DIR` moves it). Open each
 link in a browser, save the PDF, or the page as HTML, into the folder on its
-line; the file name does not matter, one file per folder. The table ends with
-the command that stores and ingests them:
+line; the file name does not matter, one file per folder. Then run the script
+the table points to, `downloads/ingest.sh`:
 
 ```sh
-kb -C DIR fetch --source ID…; kb -C DIR parse --source ID…; kb -C DIR extract --source ID…; kb -C DIR index
+~/kbs/NAME/downloads/ingest.sh
 ```
+
+It runs `fetch`, `parse` and `extract` for those sources, then `index`, with
+the options of the run that wrote it; every step runs even when an earlier one
+failed. A source still without a file is tried online again; if that fails, it
+is listed again and the script is rewritten for the sources still missing. Once
+every step succeeds the script deletes itself.
 
 A plain `kb fetch` (or `./setup NAME`) picks the files up too. A file saved by
 hand is stored instead of downloading that source's URL, with the same checks

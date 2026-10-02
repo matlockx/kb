@@ -105,7 +105,7 @@ def store(conn: sqlite3.Connection, source: Source, got: Download, raw_dir: Path
     path = raw_dir / rel
     wrote = not path.exists()
     if wrote:
-        _write_atomic(path, got.body)
+        write_atomic(path, got.body)
 
     current = conn.execute(
         "SELECT sha256, raw_path, content_type FROM document_versions WHERE document_id = ? "
@@ -237,7 +237,7 @@ def _read_saved(path: Path) -> bytes:
     return body
 
 
-def _write_atomic(path: Path, body: bytes) -> None:
+def write_atomic(path: Path, body: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".part-")
     try:
