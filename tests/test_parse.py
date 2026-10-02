@@ -46,6 +46,11 @@ def test_html_unclosed_tags_do_not_leak_skipping() -> None:
     assert extract.from_html("<body><p>one<nav>skip</p><p>two</p></body>") == [Block("one"), Block("two")]
 
 
+def test_html_cookie_state_class_on_body_does_not_skip_the_page() -> None:
+    html = '<body class="cookies-agreement-present"><div class="cookie-bar">Accept</div><h2>Methods</h2><p>x</p></body>'
+    assert extract.from_html(html) == [Block("Methods", level=2), Block("x")]
+
+
 def test_html_decodes_the_declared_charset(tmp_path: Path) -> None:
     path = tmp_path / "page.html"
     iso = '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />'
