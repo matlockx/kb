@@ -22,6 +22,11 @@ every command.
   `vectors` are derived and rebuilt by `kb index`. Keep the schema portable
   (TEXT ids, ISO-8601 TEXT timestamps, JSON arrays as TEXT).
 - Downloads are versioned by content hash and never overwritten.
+- A published bundle (`src/kb/bundle.py`) carries the source-of-truth tables,
+  the extraction cache and the configuration files, never FTS tables, vectors
+  or raw downloads, and is always age-encrypted; `kb pull` writes only
+  configuration paths out of it. Git catalogs commit text only; bundles go to
+  GitHub release assets.
 - Changing `prompts/extract.md`, modalities or topics re-extracts every
   section on the next `kb extract`; say so before doing it on a large corpus.
 

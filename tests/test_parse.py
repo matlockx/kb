@@ -330,6 +330,19 @@ def test_parse_failures_leave_chunks_untouched(conn: sqlite3.Connection, tmp_pat
     assert conn.execute("SELECT * FROM chunks").fetchall() == before
 
 
+def test_parse_keeps_stored_sections_when_the_download_is_not_on_this_device(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    raw = tmp_path / "raw"
+    add_version(conn, raw, "v.html", PAGE.encode(), "2026-01-01T00:00:00Z")
+    parse.parse_all(conn, [SOURCE], raw)
+    before = conn.execute("SELECT * FROM chunks").fetchall()
+    (raw / "v.html").unlink()  # a pulled copy: the catalog carries no raw downloads
+    [result] = parse.parse_all(conn, [SOURCE], raw)
+    assert (result.kept, result.error) == (True, None)
+    assert conn.execute("SELECT * FROM chunks").fetchall() == before
+
+
 def test_parse_refuses_to_rechunk_a_version_with_statements(conn: sqlite3.Connection, tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     version = add_version(conn, raw, "v.html", PAGE.encode(), "2026-01-01T00:00:00Z")

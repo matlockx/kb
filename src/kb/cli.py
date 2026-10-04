@@ -7,7 +7,7 @@ import statistics
 import sys
 from pathlib import Path
 
-from kb import catalog, db, domain, evaluate, extract, fetch, index, parse, setup, sources, statements
+from kb import bundle, catalog, db, domain, evaluate, extract, fetch, index, keys, parse, setup, sources, statements
 
 DOWNLOADS = Path("downloads")
 INGEST_SCRIPT = "ingest.sh"  # written into the downloads folder, beside the per-source folders
@@ -128,8 +128,23 @@ def main(argv: list[str] | None = None) -> int:
         "serve",
         help="run the read-only MCP server on stdio",
         description="Serve kb_search, kb_get, kb_topic and kb_sources over MCP on stdin/stdout, reading the "
-        "database read-only. The embedding model is loaded offline on the first search.",
+        "database read-only. The embedding model is loaded offline on the first search. Without the domain file "
+        "the copy of it stored in a published database is used.",
     )
+    commands.add_parser(
+        "keygen",
+        help="create the age identity that opens published knowledge bases",
+        description=f"Write a new age identity to ${keys.IDENTITY_ENV} (default: {keys.DEFAULT_IDENTITY}), "
+        "readable only by you, and print its public key: give that to whoever publishes a knowledge base for you. "
+        "An existing identity is never replaced; its public key is printed instead.",
+    )
+    cmd = commands.add_parser(
+        "unpack",
+        help="write the configuration files stored in a published database",
+        description="Write domain.yaml, sources.yaml, prompts/ and eval/ as stored in the database by kb publish. "
+        "Files that exist with other content are listed and kept unless --force.",
+    )
+    cmd.add_argument("--force", action="store_true", help="overwrite files that differ")
     cmd = commands.add_parser(
         "eval",
         help="measure search quality against the golden questions",
@@ -166,26 +181,40 @@ def main(argv: list[str] | None = None) -> int:
     cmd = commands.add_parser(
         "publish",
         parents=[shared],
-        help="copy this knowledge base into a catalog to share it",
-        description="Copy domain.yaml, sources.yaml, prompts/, eval/ and a snapshot of the database (no raw "
-        "downloads) into CATALOG/NAME, replacing the previous copy. In a git clone the catalog is pulled first and "
-        "the copy committed and pushed. Exits 1 when the knowledge base is not built or the push failed.",
+        help="publish this knowledge base, encrypted, to a catalog",
+        description="Snapshot the database without the derived search indexes (kb pull rebuilds them), with the "
+        "configuration files inside, compress it and encrypt it with age to every key in "
+        "CATALOG/NAME/recipients.txt, your own included. A folder catalog keeps the bundle in CATALOG/NAME; a git "
+        "clone is pulled first, the bundle uploaded as a GitHub release asset with gh, and the manifest committed "
+        "and pushed. A public knowledge base also gets a readable copy of its configuration in CATALOG/NAME. Prints "
+        "unchanged and publishes nothing when content, recipients and privacy are the same as the last version. "
+        "Exits 1 when the knowledge base is not built, a key is missing or invalid, or the upload or push failed.",
     )
     cmd.add_argument("--name", help="name in the catalog (default: the directory name)")
+    cmd.add_argument(
+        "--recipient", action="append", default=[], metavar="AGE1...", help="add a public key (repeatable)"
+    )
+    cmd.add_argument(
+        "--private",
+        action=argparse.BooleanOptionalAction,
+        help="keep the configuration out of the catalog too, only inside the bundle (default: as last published)",
+    )
     commands.add_parser(
         "catalog",
         parents=[shared],
         help="list the knowledge bases in a catalog",
-        description="Print every knowledge base in the catalog with its database size, whether ~/kbs holds a copy, "
-        "and its name from domain.yaml. A git catalog is pulled first.",
+        description="Print every knowledge base in the catalog with its version, bundle size, the version ~/kbs "
+        "holds, and its name from domain.yaml ((private) for a private one). A git catalog is pulled first.",
     )
     cmd = commands.add_parser(
         "pull",
         parents=[shared],
-        help="copy a knowledge base from a catalog and register it",
-        description="Copy CATALOG/NAME into ~/kbs/NAME, download the embedding model when it is not cached, and "
-        "offer to register NAME as an MCP server in omp's mcp.json. An existing knowledge base is replaced only "
-        "with --force; raw/ and other local files are kept. A git catalog is pulled first.",
+        help="install a knowledge base from a catalog and register it",
+        description="Download and decrypt CATALOG/NAME with your age identity, write its database and "
+        "configuration into ~/kbs/NAME, rebuild the search index (downloading the embedding model when it is not "
+        "cached) and offer to register NAME as an MCP server in omp's mcp.json. An existing knowledge base is "
+        "replaced only with --force: its vectors are reused for unchanged text, raw/ and other local files kept. A "
+        "git catalog is pulled first.",
     )
     cmd.add_argument("name", help="knowledge base name in the catalog")
     cmd.add_argument("--dir", type=Path, help="target directory (default: ~/kbs/NAME)")
@@ -202,24 +231,28 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     if args.command == "setup":
         return setup.setup(args.name, args.dir, input, main, args.omp_config)
+    if args.command == "keygen":
+        return run_keygen()
     if args.command == "publish":
-        return catalog.publish(Path.cwd(), args.catalog, args.name or Path.cwd().name)
+        return catalog.publish(Path.cwd(), args.catalog, args.name or Path.cwd().name, args.recipient, args.private)
     if args.command == "catalog":
         return catalog.show(args.catalog)
     if args.command == "pull":
-        return catalog.pull(args.name, args.catalog, args.dir, args.force, input, args.omp_config)
+        return catalog.pull(args.name, args.catalog, args.dir, args.force, input, run_index, args.omp_config)
+    if args.command == "unpack":
+        return run_unpack(args.db, args.force)
     if args.command == "index":
         return run_index(args.db)
     if args.command == "eval":
         return evaluate.run(args.db, args.file, args.k, args.min)
 
     try:
-        defined = domain.load(args.domain)
         if args.command == "serve":
             from kb import server  # the MCP SDK is only needed here
 
-            server.serve(args.db, defined)
+            server.serve(args.db, serving_domain(args.domain, args.db))
             return 0
+        defined = domain.load(args.domain)
         found = sources.load(args.file, defined)
         system = statements.system_prompt(args.prompt, defined) if args.command == "extract" else None
     except domain.ConfigError as exc:
@@ -357,6 +390,9 @@ def report_parse(parsed: list[parse.Parsed], sample: int) -> int:
         if result.error:
             print(f"{result.source_id:<34} failed: {result.error}")
             continue
+        if result.kept:
+            print(f"{result.source_id:<34} kept: download not on this device, stored sections unchanged")
+            continue
         sizes = [len(s.text) for s in result.sections]
         refs = ", ".join(s.ref for s in result.sections[:4])
         print(
@@ -367,7 +403,8 @@ def report_parse(parsed: list[parse.Parsed], sample: int) -> int:
             print(f"  --- {section.ref}  [{' > '.join(section.heading_path)[:90]}]")
             print("  " + section.text[:600].replace("\n", "\n  "))
     failed = sum(1 for r in parsed if r.error)
-    print(f"{len(parsed) - failed} parsed, {failed} failed")
+    kept = sum(1 for r in parsed if r.kept)
+    print(f"{len(parsed) - failed - kept} parsed, " + (f"{kept} kept, " if kept else "") + f"{failed} failed")
     return 1 if failed else 0
 
 
@@ -433,3 +470,48 @@ def run_index(path: Path) -> int:
     finally:
         conn.close()
     return 0
+
+
+def run_keygen() -> int:
+    path = keys.identity_path()
+    if path.exists():
+        try:
+            public = keys.public_keys(keys.load(path))
+        except keys.KeysError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f"{path} exists; its public key{'s' if len(public) > 1 else ''}:")
+        print("\n".join(public))
+        return 0
+    public = keys.generate(path)
+    print(f"wrote {path}; back it up, it is the only way to open what is published for it. Public key:")
+    print(public)
+    return 0
+
+
+def run_unpack(db_path: Path, force: bool) -> int:
+    files = bundle.stored_files(db_path) if db_path.exists() else {}
+    if not files:
+        print(f"{db_path} holds no configuration files; only a database from kb publish does", file=sys.stderr)
+        return 1
+    try:
+        written, differing = bundle.write_files(files, Path.cwd(), overwrite=force)
+    except bundle.BundleError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    for rel in written:
+        print(f"wrote {rel}")
+    for rel in differing:
+        print(f"kept {rel}: it differs from the stored copy (--force overwrites)")
+    print(f"{len(written)} written, {len(files) - len(written) - len(differing)} unchanged, {len(differing)} kept")
+    return 0
+
+
+def serving_domain(path: Path, db_path: Path) -> domain.Domain:
+    """domain.yaml when it exists, else the copy a published database stores."""
+    if path.exists() or not db_path.exists():
+        return domain.load(path)
+    text = bundle.stored_files(db_path).get("domain.yaml")
+    if text is None:
+        return domain.load(path)  # raises the missing-file error
+    return domain.parse(text, f"{db_path}:domain.yaml")
