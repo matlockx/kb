@@ -40,11 +40,20 @@ class Domain:
 def load(path: Path) -> Domain:
     """Parse and validate domain.yaml; raise ConfigError listing every problem found."""
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
+    return parse(text, str(path))
+
+
+def parse(text: str, origin: str) -> Domain:
+    """Validate the text of a domain.yaml; origin prefixes every problem in the ConfigError."""
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{origin}: {exc}") from exc
     if not isinstance(raw, dict):
-        raise ConfigError(f"{path}: expected a mapping")
+        raise ConfigError(f"{origin}: expected a mapping")
 
     problems = [f"unknown field {k!r}" for k in sorted(raw.keys() - FIELDS, key=str)]
     problems += [
@@ -57,7 +66,7 @@ def load(path: Path) -> Domain:
     problems += _entries_problems("modalities", raw.get("modalities"), ("id", "description"))
     problems += _entries_problems("topics", raw.get("topics"), ("id", "label", "description"))
     if problems:
-        raise ConfigError("\n".join(f"{path}: {p}" for p in problems))
+        raise ConfigError("\n".join(f"{origin}: {p}" for p in problems))
     return Domain(
         name=raw["name"].strip(),
         instructions=" ".join(raw["instructions"].split()),

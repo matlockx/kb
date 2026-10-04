@@ -128,34 +128,92 @@ one place only: the same name in both makes one shadow the other.
 
 ## Sharing knowledge bases between devices
 
-A catalog is a directory with one folder per built knowledge base: its
-`domain.yaml`, `sources.yaml`, `prompts/`, `eval/` and a snapshot of
-`data/kb.db`. Raw downloads stay on the device that built it. Use a folder
-synced by a cloud drive, or a clone of a git repository: in a git clone every
-command pulls first, and `publish` commits and pushes. GitHub rejects files
-over 100 MB, and every published version stays in the history, so a git
-catalog suits small knowledge bases.
+`kb publish` turns a built knowledge base into one encrypted file, a bundle;
+`kb pull` installs it on another device. The bundle is a snapshot of
+`data/kb.db` holding the source-of-truth tables, the extraction cache (so the
+copy can take new sources without paying again for the sections already
+extracted) and the configuration files (`domain.yaml`, `sources.yaml`,
+`prompts/`, `eval/`, verbatim in `kb_files`). It leaves out what `kb index`
+rebuilds, the full-text tables and the vectors, and the raw downloads. For the
+running-coach knowledge base that is 10 MB instead of 470 MB; a first pull
+rebuilds the index in about 8 minutes on an M-series Mac.
+
+Bundles are compressed with zstd and encrypted with [age](https://age-encryption.org)
+to a list of public keys, so a catalog can live in a public place and still be
+readable only by the people you list. Every device and person has its own key:
 
 ```sh
-set -Ux KB_CATALOG ~/kb-catalog            # or --catalog DIR on each command
-kb -C ~/kbs/running publish                # copy it in as "running" (--name to rename)
-kb catalog                                 # list: name, size, whether ~/kbs has it
-kb pull running                            # copy into ~/kbs/running and offer to register
+kb keygen     # writes ~/.config/kb/identity.txt (or $KB_AGE_IDENTITY) and prints the public key
 ```
 
-`publish` copies the database with `VACUUM INTO`, so the snapshot is
-consistent even while a server reads it, and replaces the previous copy only
-once the new one is complete. `pull` downloads the embedding model when it is
-not cached (the MCP server loads it offline), then asks whether to register
-the MCP server as `setup` does. A knowledge base already in the target is
-replaced only with `--force`; its `raw/` stays.
+Back the identity file up: without it nothing published for it can be opened.
 
-Build and publish each knowledge base from one device. A pulled copy is a full
-knowledge base you can rebuild, but two devices publishing the same name
-overwrite each other.
+A catalog is a directory with one folder per knowledge base: `manifest.json`
+(version, checksums, where the bundle is), `recipients.txt` (the public keys
+that can open it) and, for a public knowledge base, a readable copy of its
+configuration, so the git history shows which sources were added.
 
-The database holds the full text of every source. Keep a catalog private
-unless the sources' licences allow redistribution.
+- A folder catalog (a cloud drive, a network share) keeps the bundle beside
+  the manifest and only the newest one.
+- A git catalog (a clone with a GitHub remote) uploads each bundle as an asset
+  of a GitHub release named `NAME-vN`, through the `gh` command line (install
+  it and run `gh auth login` once). Git holds only the small text files, so the
+  repository stays small however often you publish; old releases stay until you
+  delete them. Every command pulls the clone first, and `publish` commits and
+  pushes.
+
+```sh
+set -Ux KB_CATALOG ~/kb-catalog                 # or --catalog DIR on each command
+kb -C ~/kbs/running publish                     # publish as "running" (--name to rename)
+kb -C ~/kbs/running publish --recipient age1... # also encrypt to a colleague's key
+kb -C ~/kbs/acme-contracts publish --private    # configuration only inside the bundle
+kb catalog                                      # name, version, size, the version ~/kbs holds, title
+kb pull running                                 # install into ~/kbs/running and offer to register
+kb pull running --force                         # update an installed copy
+```
+
+`publish` always adds your own public key to `recipients.txt`; add other
+people's with `--recipient`, or edit the file (one `age1...` key per line, `#`
+comments) and publish again. A publish whose content, recipients and privacy
+match the last version prints `unchanged` and uploads nothing. `--private`
+stays in force for later publishes until `--no-private`.
+
+`pull` checks the bundle against the checksum in the manifest, decrypts it,
+writes the database and the configuration files into `~/kbs/NAME` (`--dir`
+for another place), runs `kb index` (downloading the embedding model when it is
+not cached), and offers to register the MCP server as `setup` does. An
+installed knowledge base is replaced only with `--force`; its vectors are
+reused for every unchanged section and statement, so an update costs seconds,
+and `raw/` and other local files are kept.
+
+A pulled copy is a full knowledge base: add sources to `sources.yaml` and run
+`setup NAME` (or fetch, parse, extract and index) as usual, then publish it.
+`kb parse` keeps the stored sections of a source whose download is not on the
+device and reports it as `kept`; `kb fetch` downloads it again. Build and
+publish each knowledge base from one device at a time: the version number is
+the catalog's, so two devices publishing the same name replace each other's
+work.
+
+The database alone is a knowledge base too: `kb serve` falls back to the
+`domain.yaml` stored in it, and `kb unpack` (`--force` to overwrite files that
+differ) writes the stored configuration files into the directory.
+
+What the encryption does and does not do:
+
+- Only the listed keys can read a bundle. Removing a key from
+  `recipients.txt` protects later versions only; whoever held it keeps what
+  they could already decrypt.
+- age does not prove who encrypted a bundle: anyone with the public keys can
+  make one. What binds a bundle to its knowledge base is the checksum in the
+  manifest, so write access to the catalog is what has to be guarded. `pull`
+  writes only the configuration paths a bundle names, nowhere else.
+- A pulled database is plain on disk, like one you built; FileVault protects
+  it there.
+- Turning a published knowledge base `--private` keeps its configuration out of
+  later versions, not out of the git history.
+- The bundle holds the full text of every source. Encrypting it does not make
+  sharing it with others lawful; check the sources' licences before you add a
+  recipient.
 
 ## How it works
 

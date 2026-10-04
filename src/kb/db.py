@@ -3,6 +3,7 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_PATH = Path("data/kb.db")
+SCHEMA_VERSION = 1  # recorded in a published snapshot's kb_meta; pull refuses a newer one
 
 
 def connect(path: Path) -> sqlite3.Connection:

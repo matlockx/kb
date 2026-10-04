@@ -22,6 +22,7 @@ class Parsed:
     version_id: str | None
     sections: list[Section]
     error: str | None = None
+    kept: bool = False  # the download is not on this device (a pulled copy); the stored sections stay
 
 
 def current_version(conn: sqlite3.Connection, document_id: str) -> tuple[str, str, str | None] | None:
@@ -56,6 +57,12 @@ def parse_all(conn: sqlite3.Connection, sources: Iterable[Source], raw_dir: Path
             results.append(Parsed(source.id, None, [], "not fetched yet"))
             continue
         version_id, raw_path, content_type = version
+        if (
+            not (raw_dir / raw_path).exists()
+            and conn.execute("SELECT 1 FROM chunks WHERE version_id = ? LIMIT 1", (version_id,)).fetchone()
+        ):
+            results.append(Parsed(source.id, version_id, [], kept=True))
+            continue
         try:
             sections = sections_of(raw_dir / raw_path, content_type, source)
             if not sections:

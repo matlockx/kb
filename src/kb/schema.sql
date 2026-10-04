@@ -91,3 +91,16 @@ CREATE TABLE IF NOT EXISTS vectors (
   vector      BLOB NOT NULL,                         -- little-endian float32, L2-normalised
   PRIMARY KEY (kind, item_id, model)
 );
+
+-- Filled only in a published snapshot (`kb publish`), so the file alone is a whole knowledge base: the
+-- configuration files it was built from, verbatim, and facts about the snapshot. Where the files exist on disk
+-- they win; `kb unpack` writes these copies out.
+CREATE TABLE IF NOT EXISTS kb_files (
+  path    TEXT PRIMARY KEY,                          -- relative: domain.yaml, sources.yaml, prompts/..., eval/...
+  content TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kb_meta (
+  key   TEXT PRIMARY KEY,                            -- schema, name, version, published_at
+  value TEXT NOT NULL
+);
