@@ -391,11 +391,16 @@ the table points to, `downloads/ingest.sh`:
 ~/kbs/NAME/downloads/ingest.sh
 ```
 
-It runs `fetch`, `parse` and `extract` for those sources, then `index`, with
-the options of the run that wrote it; every step runs even when an earlier one
-failed. A source still without a file is tried online again; if that fails, it
-is listed again and the script is rewritten for the sources still missing. Once
-every step succeeds the script deletes itself.
+Run from a terminal, the script first opens the links in the default browser
+(`xdg-open`, else `open`), five at a time, prints the folder for each and
+waits for Enter before the next five; a link whose folder already holds a file
+(dotfiles ignored) is not opened again. It then runs `fetch`, `parse` and
+`extract` for those sources, then `index`, with the options of the run that
+wrote it; every step runs even when an earlier one failed. Without a terminal
+on standard input it skips the browser and only ingests. A source still
+without a file is tried online again; if that fails, it is listed again and the
+script is rewritten for the sources still missing. Once every step succeeds the
+script deletes itself.
 
 A plain `kb fetch` (or `./setup NAME`) picks the files up too. A file saved by
 hand is stored instead of downloading that source's URL, with the same checks
