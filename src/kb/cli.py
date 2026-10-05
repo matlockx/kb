@@ -190,14 +190,15 @@ def main(argv: list[str] | None = None) -> int:
     cmd.add_argument(
         "--omp-config", type=Path, default=setup.OMP_MCP, help="omp MCP config to register in (default: %(default)s)"
     )
-    shelf = os.environ.get("KB_CATALOG") or None  # empty would mean the current directory
+    shelf = catalog.location()
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument(
         "--catalog",
         type=Path,
         default=shelf,
         required=shelf is None,
-        help="catalog directory, e.g. a git clone or a synced cloud folder (default: $KB_CATALOG)",
+        help="catalog directory, e.g. a git clone or a synced cloud folder (default: $KB_CATALOG, else the catalog "
+        "connected in the kb menu)",
     )
     cmd = commands.add_parser(
         "publish",
@@ -214,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     cmd.add_argument("--name", help="name in the catalog (default: the directory name)")
     cmd.add_argument(
         "--recipient", action="append", default=[], metavar="AGE1...", help="add a public key (repeatable)"
+    )
+    cmd.add_argument(
+        "--revoke", action="append", default=[], metavar="AGE1...", help="remove a public key (repeatable)"
     )
     cmd.add_argument(
         "--private",
@@ -261,7 +265,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "keygen":
         return run_keygen()
     if args.command == "publish":
-        return catalog.publish(Path.cwd(), args.catalog, args.name or Path.cwd().name, args.recipient, args.private)
+        return catalog.publish(
+            Path.cwd(), args.catalog, args.name or Path.cwd().name, args.recipient, args.private, tuple(args.revoke)
+        )
     if args.command == "catalog":
         return catalog.show(args.catalog)
     if args.command == "pull":

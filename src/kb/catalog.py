@@ -8,6 +8,7 @@ catalog uploads it as a GitHub release asset with gh, so the git history only gr
 """
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,6 +32,7 @@ FORMAT = 1  # of manifest.json; pull refuses a newer one
 ASSET_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-v[0-9]+\.kb\.zst\.age")
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")  # GitHub owner/name
 RECIPIENTS_HEADER = "# age public keys (age1...) that can open this knowledge base, one per line\n"
+SAVED = Path.home() / ".config" / "kb" / "catalog"  # the catalog connect remembers; KB_CATALOG takes precedence
 
 Index = Callable[[Path], int]  # database path -> exit code; rebuilds the FTS tables and vectors (cli.run_index)
 
@@ -38,11 +41,68 @@ class CatalogError(Exception):
     pass
 
 
-def publish(home: Path, catalog: Path, name: str, add: list[str], private: bool | None) -> int:
+@dataclass(frozen=True)
+class Entry:
+    """One knowledge base in a catalog, as its manifest and the local copy describe it."""
+
+    name: str
+    manifest: dict | None  # None when the manifest cannot be used; problem says why
+    problem: str | None
+    local: str  # 'vN' for a pulled copy, 'built here' for another database, '' without one
+
+
+def location(saved: Path = SAVED) -> Path | None:
+    """KB_CATALOG when set, else the catalog connect saved; None without either."""
+    if env := os.environ.get("KB_CATALOG"):
+        return Path(env).expanduser()
+    try:
+        text = saved.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return Path(text) if text else None
+
+
+def remember(catalog: Path | None, saved: Path = SAVED) -> None:
+    """Save catalog as the default catalog of this device; None forgets it."""
+    if catalog is None:
+        saved.unlink(missing_ok=True)
+        return
+    saved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    saved.write_text(f"{catalog.expanduser().resolve()}\n", encoding="utf-8")
+
+
+def connect(repo: str, target: Path, create: bool = False, saved: Path = SAVED) -> int:
+    """Clone the GitHub repository owner/name into target and save it as the catalog; with create, make it first
+    as a private repository. An existing clone at target is saved as it is."""
+    if not REPO_RE.fullmatch(repo):
+        print(f"{repo!r} is not a GitHub repository name; use owner/name", file=sys.stderr)
+        return 1
+    target = target.expanduser().resolve()
+    if target.exists() and not _is_git(target):
+        print(f"{target} exists and is not a git clone; choose another directory", file=sys.stderr)
+        return 1
+    try:
+        if create:
+            _gh(Path.home(), "repo", "create", repo, "--private", "--add-readme", "--description", "kb catalog")
+            print(f"created the private repository {repo}")
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _gh(target.parent, "repo", "clone", repo, str(target))
+    except CatalogError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    remember(target, saved)
+    print(f"catalog {target} connected; kb publish, kb catalog and kb pull use it")
+    return 0
+
+
+def publish(
+    home: Path, catalog: Path, name: str, add: list[str], private: bool | None, remove: tuple[str, ...] = ()
+) -> int:
     """Publish the knowledge base in home as the next version of catalog/name; commit and push in a git clone.
 
-    add lists public keys to append to its recipients; the publisher's own keys are always recipients. private
-    None keeps the previous setting (public at first).
+    add lists public keys to append to its recipients and remove keys to drop from them; the publisher's own keys
+    are always recipients. private None keeps the previous setting (public at first).
     """
     if not ID_RE.fullmatch(name):
         print(f"name {name!r} must be lowercase letters, digits and single hyphens; pass --name", file=sys.stderr)
@@ -61,7 +121,7 @@ def publish(home: Path, catalog: Path, name: str, add: list[str], private: bool 
     try:
         old = _manifest(entry)
         own = keys.public_keys(keys.load(keys.identity_path()))
-        listed, recipients = _recipients(entry, [*own, *add])
+        listed, recipients = _recipients(entry, [*own, *add], tuple(k for k in remove if k not in own))
         files = bundle.config_files(home)
         private = bool(old and old.get("private")) if private is None else private
         snapshot = work / "kb.db"
@@ -130,27 +190,46 @@ def show(catalog: Path, root: Path | None = None) -> int:
     if not catalog.is_dir():
         print(f"catalog {catalog} is not a directory", file=sys.stderr)
         return 1
-    entries = [catalog / name for name in names(catalog)]
-    if not entries:
+    found = entries(catalog, root)
+    if not found:
         print(f"no knowledge bases in {catalog}")
         return 0
-    for entry in entries:
-        try:
-            manifest = _manifest(entry)
-        except CatalogError as exc:
-            print(f"{entry.name:<32} {exc}")
+    for entry in found:
+        if entry.manifest is None:
+            print(f"{entry.name:<32} {entry.problem}")
             continue
-        if manifest is None:  # removed since the glob
-            continue
-        local = _local_version(entry.name, (root or setup.KB_ROOT) / entry.name / DB)
-        if local.startswith("v") and local != f"v{manifest['version']}":
-            local += " (older)"
-        title = manifest.get("title") or "(private)"
+        local = entry.local + (" (older)" if outdated(entry) else "")
+        title = entry.manifest.get("title") or "(private)"
         print(
-            f"{entry.name:<32} v{manifest['version']:<4} {manifest['bundle']['size'] / 1e6:>7.1f} MB  "
+            f"{entry.name:<32} v{entry.manifest['version']:<4} {entry.manifest['bundle']['size'] / 1e6:>7.1f} MB  "
             f"{local:<14} {title}"
         )
     return 0
+
+
+def entries(catalog: Path, root: Path | None = None) -> list[Entry]:
+    """Every knowledge base in the catalog with the version root (default ~/kbs) holds; pulls a git catalog first."""
+    found = []
+    for name in names(catalog):
+        try:
+            manifest, problem = _manifest(catalog / name), None
+        except CatalogError as exc:
+            manifest, problem = None, str(exc)
+        if manifest is None and problem is None:  # removed since the glob
+            continue
+        found.append(Entry(name, manifest, problem, local_version(name, (root or setup.KB_ROOT) / name / DB)))
+    return found
+
+
+def outdated(entry: Entry) -> bool:
+    """Whether the local copy is a pulled version older than the catalog's."""
+    return entry.manifest is not None and entry.local.startswith("v") and entry.local != f"v{entry.manifest['version']}"
+
+
+def recipients(catalog: Path, name: str) -> list[str]:
+    """The public keys catalog/name is encrypted to, as its recipients.txt lists them."""
+    path = catalog / name / RECIPIENTS
+    return keys.parse_recipients(path.read_text(encoding="utf-8"), str(path)) if path.exists() else []
 
 
 def names(catalog: Path) -> list[str]:
@@ -258,10 +337,12 @@ def _manifest(entry: Path) -> dict | None:
     return manifest
 
 
-def _recipients(entry: Path, wanted: list[str]) -> tuple[str, list[str]]:
-    """(text of recipients.txt with wanted keys appended, the keys it lists)."""
+def _recipients(entry: Path, wanted: list[str], dropped: tuple[str, ...] = ()) -> tuple[str, list[str]]:
+    """(text of recipients.txt without the dropped keys and with wanted keys appended, the keys it lists)."""
     path = entry / RECIPIENTS
     text = path.read_text(encoding="utf-8") if path.exists() else RECIPIENTS_HEADER
+    if dropped:
+        text = "".join(line for line in text.splitlines(keepends=True) if line.split("#", 1)[0].strip() not in dropped)
     listed = keys.parse_recipients(text, str(path))
     for key in keys.parse_recipients("\n".join(wanted), "--recipient"):
         if key not in listed:
@@ -319,7 +400,7 @@ def counts(path: Path) -> dict[str, int]:
         conn.close()
 
 
-def _local_version(name: str, path: Path) -> str:
+def local_version(name: str, path: Path) -> str:
     """'vN' for a pulled copy of name, 'built here' for another database, '' without one."""
     if not path.exists():
         return ""

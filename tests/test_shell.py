@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from kb import catalog, cli, db, setup, shell
+from kb import keys as age
+from tests.test_catalog import built
 
 
 def keys(*pressed: str) -> shell.Keys:
@@ -37,6 +39,7 @@ def make_shell(tmp_path: Path, pressed: list[str], replies: tuple[str, ...] = ()
             raise EOFError from None
 
     kwargs.setdefault("cli", Recorder())
+    kwargs.setdefault("saved", tmp_path / "saved-catalog")
     return shell.Shell(
         keys=keys(*pressed), ask=ask, out=io.StringIO(), root=tmp_path / "kbs", config=tmp_path / "mcp.json", **kwargs
     )
@@ -180,35 +183,118 @@ def test_ctrl_c_in_a_menu_quits(tmp_path: Path) -> None:
     assert s.run() == 0
 
 
-def test_catalog_items_pull_and_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def me(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """This device's age identity, outside the real home; returns its public key."""
+    path = tmp_path / "keys" / "me.txt"
+    monkeypatch.setenv(age.IDENTITY_ENV, str(path))
+    return age.generate(path)
+
+
+def test_catalog_publishes_shares_revokes_and_turns_private(
+    tmp_path: Path, me: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    built(tmp_path / "kbs" / "running")
     shelf = tmp_path / "shelf"
-    for name in ("fresh", "running"):
-        (shelf / name).mkdir(parents=True)
-        (shelf / name / catalog.MANIFEST).write_text("{}", encoding="utf-8")
-    home = knowledge_base(tmp_path / "kbs", "running")
-    pulled, published = [], []
-    monkeypatch.setattr(
-        catalog, "pull", lambda name, _c, home, force, _a, index, _o: pulled.append((name, home, force, index(home)))
-    )
-    monkeypatch.setattr(catalog, "publish", lambda home, c, name, *_: published.append((home, c, name)))
+    shelf.mkdir()
+    other = age.generate(tmp_path / "keys" / "other.txt")
+    pressed = [
+        "down", "down", "enter",  # home: running, + new, ⇅ catalog, age key
+        "enter", "enter",  # catalog: + publish, connect; publish running
+        "enter",  # catalog: running, connect; open running
+        "down", "enter",  # entry: publish, share, revoke, make private (no install over a copy built here); share
+        "down", "enter", "enter",  # revoke the key just added
+        "down", "enter",  # make private
+        "up", "up", "up", "enter",  # publish again: unchanged
+    ]  # fmt: skip
+    s = make_shell(tmp_path, pressed, replies=(other,), shelf=shelf)
+    s.run()
+    assert "reinstall" not in s.out.getvalue()  # pulling would overwrite the copy this device builds
+    out = capsys.readouterr().out
+    for version, recipients in ((1, 1), (2, 2), (3, 1), (4, 1)):
+        assert f"published running v{version} to {shelf / 'running'}" in out
+        assert f"encrypted to {recipients} recipient" in out.split(f"published running v{version}", 1)[1]
+    assert "running v4 is unchanged; nothing to publish" in out
+    assert catalog.recipients(shelf, "running") == [me]
+    assert json.loads((shelf / "running" / catalog.MANIFEST).read_text())["private"] is True
+    assert "running v4 · 1 keys · private" in s.out.getvalue()
+
+
+@pytest.mark.usefixtures("me")
+def test_catalog_installs_and_offers_the_update(tmp_path: Path) -> None:
+    shelf = tmp_path / "shelf"
+    shelf.mkdir()
+    source = built(tmp_path / "elsewhere" / "running")
+    assert catalog.publish(source, shelf, "running", [], None) == 0
     recorder = Recorder()
-    # home menu: running, + new, ↓ pull, age key. Pull fresh, then running (an update), then publish running.
-    pressed = ["down", "down", "enter", "enter", "enter", "down", "enter", "up", "up", "enter", "up", "enter"]
-    s = make_shell(tmp_path, pressed, cli=recorder, shelf=shelf)
+    # home: + new, ⇅ catalog, age key; catalog: running, connect; entry: install
+    s = make_shell(tmp_path, ["down", "enter", "enter", "enter"], cli=recorder, shelf=shelf)
     s.run()
-    assert pulled == [
-        ("fresh", tmp_path / "kbs" / "fresh", False, 0),
-        ("running", tmp_path / "kbs" / "running", True, 0),
-    ]
-    assert recorder.calls[0] == ["--db", str(tmp_path / "kbs" / "fresh"), "index"]
-    assert published == [(home.resolve(), shelf, "running")]
+    installed = tmp_path / "kbs" / "running"
+    assert (installed / db.DEFAULT_PATH).exists()
+    assert recorder.calls == [["--db", str(installed / db.DEFAULT_PATH), "index"]]
+    assert "not installed" in s.out.getvalue()
+
+    built(source, "v2")
+    assert catalog.publish(source, shelf, "running", [], None) == 0
+    [entry] = catalog.entries(shelf, tmp_path / "kbs")
+    assert catalog.outdated(entry)
+    # home: running, + new, ⇅ catalog, age key; catalog: running, connect; entry: update
+    s = make_shell(tmp_path, ["down", "down", "enter", "enter", "enter"], cli=recorder, shelf=shelf)
+    s.run()
+    assert "update v1 → v2" in s.out.getvalue()
+    assert not catalog.outdated(catalog.entries(shelf, tmp_path / "kbs")[0])
 
 
-def test_an_empty_catalog_says_so(tmp_path: Path) -> None:
-    (tmp_path / "shelf").mkdir()
-    s = make_shell(tmp_path, ["down", "enter"], shelf=tmp_path / "shelf")
+def test_catalog_connects_a_clone_a_new_repository_or_a_folder_and_forgets_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def gh(_cwd: Path, *args: str) -> str:
+        calls.append(args)
+        if args[:2] == ("repo", "clone"):
+            (Path(args[3]) / ".git").mkdir(parents=True)
+        return ""
+
+    monkeypatch.setattr(catalog, "_gh", gh)
+    monkeypatch.delenv("KB_CATALOG", raising=False)
+    # home: + new, ⇅ catalog, age key; connect: clone; repository; default directory; then leave
+    s = make_shell(tmp_path, ["down", "enter", "enter"], replies=("me/kb-catalog", ""))
     s.run()
-    assert "no knowledge bases in" in s.out.getvalue()
+    clone = (tmp_path / "kb-catalog").resolve()
+    assert calls == [("repo", "clone", "me/kb-catalog", str(clone))]
+    assert s.shelf == clone
+    assert catalog.location(tmp_path / "saved-catalog") == clone
+
+    calls.clear()
+    s = make_shell(tmp_path, ["down", "enter", "down", "enter"], replies=("me/new", str(tmp_path / "new")))
+    s.run()
+    assert calls[0][:3] == ("repo", "create", "me/new") and "--private" in calls[0]
+    assert s.shelf == (tmp_path / "new").resolve()
+
+    folder = tmp_path / "synced"
+    folder.mkdir()
+    # open the catalog menu, choose connect, then the folder option
+    s = make_shell(tmp_path, ["down", "enter", "enter", "down", "down", "enter"], replies=(str(folder),), shelf=s.shelf)
+    s.run()
+    assert catalog.location(tmp_path / "saved-catalog") == folder.resolve()
+    # open the catalog menu, choose connect, then forget
+    s = make_shell(tmp_path, ["down", "enter", "enter", "up", "enter"], shelf=folder)
+    s.run()
+    assert s.shelf is None and catalog.location(tmp_path / "saved-catalog") is None
+
+
+def test_catalog_reports_a_missing_folder_and_cancelled_answers(tmp_path: Path) -> None:
+    s = make_shell(tmp_path, ["down", "enter", "down", "down", "enter"], replies=(str(tmp_path / "nope"),))
+    s.shelf = tmp_path / "gone"
+    s.run()
+    assert f"catalog {tmp_path / 'gone'} is not a directory" in s.out.getvalue()
+    assert f"{(tmp_path / 'nope').resolve()} is not a directory" in s.out.getvalue()
+    assert s.shelf == tmp_path / "gone"
+    s = make_shell(tmp_path, ["down", "enter", "enter"])  # clone, then no repository given
+    s.run()
+    assert s.shelf is None
 
 
 def test_bare_kb_needs_a_terminal(capsys: pytest.CaptureFixture[str]) -> None:
