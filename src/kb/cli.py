@@ -224,13 +224,17 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         help="keep the configuration out of the catalog too, only inside the bundle (default: as last published)",
     )
-    commands.add_parser(
+    cmd = commands.add_parser(
         "catalog",
         parents=[shared],
-        help="list the knowledge bases in a catalog",
+        help="list the knowledge bases in a catalog, or show one in detail",
         description="Print every knowledge base in the catalog with its version, bundle size, the version ~/kbs "
-        "holds, and its name from domain.yaml ((private) for a private one). A git catalog is pulled first.",
+        "holds, and its name from domain.yaml ((private) for a private one). With NAME, print the details its "
+        "manifest records instead: title, version and publication time, visibility, document and statement counts, "
+        "bundle file, size and checksum, where the bundle is stored, the local copy and the keys it is encrypted "
+        "to. A git catalog is pulled first. Exits 1 when NAME is not in the catalog or its manifest is invalid.",
     )
+    cmd.add_argument("name", nargs="?", help="knowledge base to show in detail")
     cmd = commands.add_parser(
         "pull",
         parents=[shared],
@@ -269,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             Path.cwd(), args.catalog, args.name or Path.cwd().name, args.recipient, args.private, tuple(args.revoke)
         )
     if args.command == "catalog":
-        return catalog.show(args.catalog)
+        return catalog.info(args.catalog, args.name) if args.name else catalog.show(args.catalog)
     if args.command == "pull":
         return catalog.pull(args.name, args.catalog, args.dir, args.force, input, run_index, args.omp_config)
     if args.command == "unpack":

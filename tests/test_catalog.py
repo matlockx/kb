@@ -109,6 +109,25 @@ def test_publish_encrypts_a_slim_snapshot_and_pull_restores_it(
     assert line.endswith("v1             running knowledge base")
 
 
+def test_info_shows_one_entry_and_refuses_an_unknown_name(tmp_path: Path, shelf: Path, identity: str, capsys) -> None:
+    assert publish(built(tmp_path / "running"), shelf) == 0
+    found = manifest(shelf)
+    capsys.readouterr()
+
+    assert catalog.info(shelf, "running", tmp_path / "none") == 0
+    out = capsys.readouterr().out
+    assert f"v1, published {found['published_at']}" in out
+    assert "visibility  public" in out
+    assert "contents    0 documents, 0 statements" in out
+    assert f"stored in   {shelf / 'running'}" in out
+    assert "local copy  not installed" in out
+    assert out.endswith(f"1 key the bundle is encrypted to\n              {identity}\n")
+
+    for unknown in ("missing", "../running"):
+        assert catalog.info(shelf, unknown) == 1
+        assert "is not in the catalog" in capsys.readouterr().err
+
+
 def test_unchanged_content_is_not_republished_and_force_pull_updates_reusing_vectors(
     tmp_path: Path, shelf: Path, capsys
 ) -> None:

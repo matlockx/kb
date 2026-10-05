@@ -207,6 +207,39 @@ def show(catalog: Path, root: Path | None = None) -> int:
     return 0
 
 
+def info(catalog: Path, name: str, root: Path | None = None) -> int:
+    """Print what the manifest of catalog/name records and the copy root (default ~/kbs) holds; pulls a git catalog."""
+    _git_pull(catalog)
+    try:
+        manifest = _manifest(catalog / name) if ID_RE.fullmatch(name) else None
+    except CatalogError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if manifest is None:
+        print(f"{name!r} is not in the catalog {catalog}; `kb catalog` lists it", file=sys.stderr)
+        return 1
+    entry = Entry(name, manifest, None, local_version(name, (root or setup.KB_ROOT) / name / DB))
+    packed, counted = manifest["bundle"], manifest.get("counts") or {}
+    release = manifest.get("release")
+    listed = manifest.get("recipients") or []
+    rows = {
+        "title": manifest.get("title") or "(private)",
+        "version": f"v{manifest['version']}, published {manifest.get('published_at', 'at an unknown time')}",
+        "visibility": "private" if manifest.get("private") else "public",
+        "contents": f"{counted.get('documents', '?')} documents, {counted.get('statements', '?')} statements",
+        "bundle": f"{packed['file']}, {packed['size'] / 1e6:.1f} MB, sha256 {packed['sha256']}",
+        "stored in": f"GitHub release {release['tag']} of {release['repo']}" if release else str(catalog / name),
+        "local copy": (entry.local + (" (older)" if outdated(entry) else "")) or "not installed",
+        "recipients": f"{len(listed)} key{'s' if len(listed) != 1 else ''} the bundle is encrypted to",
+    }
+    print(name)
+    for label, value in rows.items():
+        print(f"  {label:<11} {value}")
+    for key in listed:
+        print(f"  {'':<11} {key}")
+    return 0
+
+
 def entries(catalog: Path, root: Path | None = None) -> list[Entry]:
     """Every knowledge base in the catalog with the version root (default ~/kbs) holds; pulls a git catalog first."""
     found = []
