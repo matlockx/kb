@@ -48,14 +48,26 @@ arrow keys or `j`/`k` move, enter chooses, `esc` or `q` goes back.
   source and statement counts and whether its MCP server is registered.
 - A knowledge base opens a menu of its commands: check, build (the `setup
   NAME` run below), fetch, parse, extract, index, eval, register, and publish
-  when `KB_CATALOG` is set. `kb -C DIR` without a command opens this menu for
-  the knowledge base in `DIR` directly.
+  once a catalog is connected. `kb -C DIR` without a command opens this menu
+  for the knowledge base in `DIR` directly.
 - `+ new` asks for a name and creates the directory as `setup NAME` does;
-  `↓ pull` (with `KB_CATALOG`) installs or updates one from the catalog;
   `age key` prints your public key, creating it on first use.
+- `⇅ catalog` manages the shared catalog (see "Sharing knowledge bases between
+  devices"). Without one it offers to connect: clone an existing GitHub
+  catalog, create a new private GitHub repository with `gh` and clone it, or
+  use a local or synced folder; the choice is saved in `~/.config/kb/catalog`,
+  and `KB_CATALOG` still takes precedence. With one it lists every published
+  knowledge base with its version, size, the copy `~/kbs` holds and its title.
+  An entry installs, updates or reinstalls a pulled copy and, for a knowledge
+  base on this device, publishes a new version, shares it with another age
+  key, revokes a key, or turns it private or public. `+ publish` shares a local
+  knowledge base not yet in the catalog. The menu never offers to pull over a
+  knowledge base built on this device, and creates your age key before the
+  first publish.
 
 Every entry runs the same code as the matching command and prints its output
-above the menu. Editing files, git and `gh` stay with their own tools.
+above the menu. Editing files and the git history stay with their own tools;
+GitHub is reached through `gh`.
 
 ## Starting a new knowledge base
 
@@ -223,9 +235,10 @@ configuration, so the git history shows which sources were added.
   pushes.
 
 ```sh
-set -Ux KB_CATALOG ~/kb-catalog                 # or --catalog DIR on each command
+set -Ux KB_CATALOG ~/kb-catalog                 # or connect one in the menu, or --catalog DIR on each command
 kb -C ~/kbs/running publish                     # publish as "running" (--name to rename)
 kb -C ~/kbs/running publish --recipient age1... # also encrypt to a colleague's key
+kb -C ~/kbs/running publish --revoke age1...    # stop encrypting later versions to a key
 kb -C ~/kbs/acme-contracts publish --private    # configuration only inside the bundle
 kb catalog                                      # name, version, size, the version ~/kbs holds, title
 kb pull running                                 # install into ~/kbs/running and offer to register
@@ -233,10 +246,11 @@ kb pull running --force                         # update an installed copy
 ```
 
 `publish` always adds your own public key to `recipients.txt`; add other
-people's with `--recipient`, or edit the file (one `age1...` key per line, `#`
-comments) and publish again. A publish whose content, recipients and privacy
-match the last version prints `unchanged` and uploads nothing. `--private`
-stays in force for later publishes until `--no-private`.
+people's with `--recipient` and remove them with `--revoke`, or edit the file
+(one `age1...` key per line, `#` comments) and publish again. A publish whose
+content, recipients and privacy match the last version prints `unchanged` and
+uploads nothing. `--private` stays in force for later publishes until
+`--no-private`.
 
 `pull` checks the bundle against the checksum in the manifest, decrypts it,
 writes the database and the configuration files into `~/kbs/NAME` (`--dir`

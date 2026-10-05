@@ -13,10 +13,12 @@ import termios
 import tty
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TextIO
 
 from kb import catalog, setup
+from kb import keys as age
 from kb.db import DEFAULT_PATH as DB
 
 # 256-colour palette of the bubbletea list example (lipgloss colours 62, 212, 241)
@@ -169,9 +171,10 @@ class Shell:
         root: Path = setup.KB_ROOT,
         config: Path = setup.OMP_MCP,
         shelf: Path | None = None,
+        saved: Path = catalog.SAVED,
     ) -> None:
         self.cli, self.keys, self.ask, self.out = cli, keys, ask, out
-        self.root, self.config, self.shelf = root, config, shelf
+        self.root, self.config, self.shelf, self.saved = root, config, shelf, saved
 
     def run(self, home: Path | None = None) -> int:
         """The first screen, or only the menu of the knowledge base in home when one is given."""
@@ -202,9 +205,9 @@ class Shell:
             for name, home in discover(self.root, registered)
         ]
         items.append(self.leaf("+ new", f"create a knowledge base in {self.root}", self.create))
-        if self.shelf is not None:
-            shelf = self.shelf
-            items.append(Item("↓ pull", f"install or update one from {shelf}", lambda: self.pull(shelf)))
+        items.append(
+            Item("⇅ catalog", str(self.shelf) if self.shelf else "connect a GitHub catalog to share", self.browse)
+        )
         items.append(self.leaf("age key", "show your public key, created on first use", lambda: self.cli(["keygen"])))
         return items
 
@@ -251,26 +254,174 @@ class Shell:
         name = name.strip()
         return setup.setup(name, self.root / name, self.ask, self.cli, self.config) if name else 0
 
-    def pull(self, shelf: Path) -> None:
+    def prompt(self, question: str, default: str = "") -> str:
+        """One line of input; the default for an empty answer, '' when cancelled."""
+        hint = f" {DIM}({default}; empty for it){RESET}" if default else f" {DIM}(empty cancels){RESET}"
+        try:
+            answer = self.ask(f"{ACCENT}?{RESET} {question}{hint} ").strip()
+        except EOFError:
+            return ""
+        return answer or default
+
+    def browse(self) -> None:
+        """The catalog menu: its knowledge bases, publishing a local one, and connecting another catalog."""
+        cursor: int | None = 0
+        while True:
+            if self.shelf is None or not self.shelf.is_dir():
+                if self.shelf is not None:
+                    self.out.write(f"{RED}catalog {self.shelf} is not a directory{RESET}\n")
+                self.connect()
+                if self.shelf is None or not self.shelf.is_dir():
+                    return
+            shelf = self.shelf
+            local = dict(discover(self.root, servers(self.config)))
+            found = catalog.entries(shelf, self.root)
+            items = [self.entry_item(shelf, entry, local.get(entry.name)) for entry in found]
+            unpublished = {name: home for name, home in local.items() if name not in {e.name for e in found}}
+            if unpublished:
+                publish = partial(self.publish_new, shelf, unpublished)
+                items.append(Item("+ publish", "share a local knowledge base", publish))
+            items.append(Item("connect", "use another catalog, or forget this one", self.connect))
+            cursor = choose(f"catalog {shelf}", items, self.keys, self.out, start=cursor)
+            if cursor is None:
+                return
+            items[cursor].action()
+
+    def entry_item(self, shelf: Path, entry: catalog.Entry, home: Path | None) -> Item:
+        if entry.manifest is None:
+            return Item(entry.name, str(entry.problem), lambda: None)
+        manifest = entry.manifest
+        if catalog.outdated(entry):
+            state = f"update {entry.local} → v{manifest['version']}"
+        elif entry.local.startswith("v"):
+            state = f"installed {entry.local}"
+        else:
+            state = entry.local or "not installed"
+        detail = f"v{manifest['version']} · {manifest['bundle']['size'] / 1e6:.1f} MB · {state} · "
+        return Item(entry.name, detail + (manifest.get("title") or "(private)"), lambda: self.entry(shelf, entry, home))
+
+    def entry(self, shelf: Path, entry: catalog.Entry, home: Path | None) -> None:
+        """The menu of one catalog entry: install or update it and, for a local knowledge base, publish and share."""
+        cursor: int | None = 0
+        while entry.manifest is not None:
+            items = self.entry_items(shelf, entry, home)
+            title = f"{entry.name} v{entry.manifest['version']} · {len(catalog.recipients(shelf, entry.name))} keys"
+            title += " · private" if entry.manifest.get("private") else " · public"
+            cursor = choose(title, items, self.keys, self.out, start=cursor)
+            if cursor is None:
+                return
+            items[cursor].action()
+            entry = next((e for e in catalog.entries(shelf, self.root) if e.name == entry.name), entry)
+
+    def entry_items(self, shelf: Path, entry: catalog.Entry, home: Path | None) -> list[Item]:
+        name, version = entry.name, (entry.manifest or {}).get("version")
+        target = home or self.root / name
+        local = catalog.local_version(name, target / DB)
+
+        def install() -> int:
+            index = lambda path: self.cli(["--db", str(path), "index"])  # noqa: E731
+            return catalog.pull(name, shelf, target, bool(local), self.ask, index, self.config)
+
         items = []
-        for name in catalog.names(shelf):
-            home = self.root / name
-            installed = (home / "domain.yaml").exists()
+        own = local == "built here" or (not local and (target / "domain.yaml").exists())
+        if not own:  # pulling would replace the configuration and database this device builds and publishes
+            verb = "install" if not local else ("reinstall" if local == f"v{version}" else "update")
+            items.append(self.leaf(verb, f"v{version} into {target}", install, f"{verb} {name}"))
+        if home is None:
+            return items
+        private = bool((entry.manifest or {}).get("private"))
+        return [
+            *items,
+            self.leaf("publish", f"a new version from {home}", self.publisher(shelf, name, home), f"publish {name}"),
+            self.leaf("share", "add someone's age key and publish", lambda: self.share(shelf, name, home)),
+            Item("revoke", "remove someone's key and publish", lambda: self.revoke(shelf, name, home)),
+            self.leaf(
+                "make public" if private else "make private",
+                "configuration readable in the catalog" if private else "configuration only inside the bundle",
+                self.publisher(shelf, name, home, private=not private),
+            ),
+        ]
 
-            def install(name: str = name, home: Path = home, installed: bool = installed) -> int:
-                index = lambda path: self.cli(["--db", str(path), "index"])  # noqa: E731
-                return catalog.pull(name, shelf, home, installed, self.ask, index, self.config)
+    def publisher(
+        self, shelf: Path, name: str, home: Path, add: str = "", remove: str = "", private: bool | None = None
+    ) -> Callable[[], int]:
+        def publish() -> int:
+            if not age.identity_path().exists():  # every bundle is encrypted to its publisher, so make the key first
+                self.cli(["keygen"])
+            return catalog.publish(home, shelf, name, [add] if add else [], private, (remove,) if remove else ())
 
-            items.append(self.leaf(name, "installed; updates it" if installed else "", install, f"pull {name}"))
-        if not items:
-            self.out.write(f"{DIM}no knowledge bases in {shelf}{RESET}\n")
+        return publish
+
+    def share(self, shelf: Path, name: str, home: Path) -> int:
+        key = self.prompt("age public key to add (age1...)")
+        return self.publisher(shelf, name, home, add=key)() if key else 0
+
+    def revoke(self, shelf: Path, name: str, home: Path) -> None:
+        try:
+            own = age.public_keys(age.load(age.identity_path()))
+        except age.KeysError:
+            own = []
+        others = [k for k in catalog.recipients(shelf, name) if k not in own]
+        if not others:
+            self.out.write(f"{DIM}{name} is encrypted to your own keys only{RESET}\n")
             return
-        picked = choose(f"catalog {shelf}", items, self.keys, self.out)
+        items = [
+            self.leaf(k, "remove and publish", self.publisher(shelf, name, home, remove=k), f"revoke {k[:16]}…")
+            for k in others
+        ]
+        picked = choose(f"revoke a key of {name}", items, self.keys, self.out)
         if picked is not None:
             items[picked].action()
 
+    def publish_new(self, shelf: Path, unpublished: dict[str, Path]) -> None:
+        items = [
+            self.leaf(name, str(home), self.publisher(shelf, name, home), f"publish {name}")
+            for name, home in sorted(unpublished.items())
+        ]
+        picked = choose(f"publish to {shelf}", items, self.keys, self.out)
+        if picked is not None:
+            items[picked].action()
+
+    def connect(self) -> None:
+        """Connect a catalog: clone or create a GitHub repository, or use a folder; or forget the current one."""
+        items = [
+            self.leaf("clone", "an existing GitHub catalog (owner/name)", lambda: self.clone(create=False)),
+            self.leaf("create", "a new private GitHub repository as the catalog", lambda: self.clone(create=True)),
+            self.leaf("folder", "a local or synced folder", self.use_folder),
+        ]
+        if self.shelf is not None:
+            items.append(self.leaf("forget", f"stop using {self.shelf}", self.forget))
+        picked = choose("connect a catalog", items, self.keys, self.out)
+        if picked is not None:
+            items[picked].action()
+
+    def clone(self, create: bool) -> int:
+        repo = self.prompt("GitHub repository (owner/name)")
+        if not repo:
+            return 0
+        target = Path(self.prompt("clone into", str(self.root.parent / "kb-catalog"))).expanduser().resolve()
+        done = catalog.connect(repo, target, create, self.saved)
+        if done == 0:
+            self.shelf = target
+        return done
+
+    def use_folder(self) -> int:
+        answer = self.prompt("catalog folder")
+        if not answer:
+            return 0
+        folder = Path(answer).expanduser().resolve()
+        if not folder.is_dir():
+            self.out.write(f"{RED}{folder} is not a directory{RESET}\n")
+            return 1
+        catalog.remember(folder, self.saved)
+        self.shelf = folder
+        return 0
+
+    def forget(self) -> None:
+        catalog.remember(None, self.saved)
+        self.shelf = catalog.location(self.saved)  # KB_CATALOG still applies
+
 
 def run(cli: setup.Run, home: Path | None = None) -> int:
-    """The shell on the terminal, with KB_CATALOG as the catalog when it is set; home opens one knowledge base."""
-    shelf = os.environ.get("KB_CATALOG")
-    return Shell(cli, shelf=Path(shelf).expanduser().resolve() if shelf else None).run(home)
+    """The shell on the terminal with the catalog of catalog.location(); home opens one knowledge base."""
+    return Shell(cli, shelf=catalog.location()).run(home)

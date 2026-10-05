@@ -153,6 +153,86 @@ def test_only_recipients_can_pull_and_a_recipient_added_later_can(
     assert marker(target) == "v1"
 
 
+def test_a_revoked_key_leaves_the_recipients_and_your_own_key_stays(
+    tmp_path: Path, shelf: Path, identity: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kb import cli
+
+    source = built(tmp_path / "running")
+    colleague = keys.generate(tmp_path / "keys" / "colleague.txt")
+    assert publish(source, shelf, add=[colleague]) == 0
+    (shelf / "running" / catalog.RECIPIENTS).write_text(
+        (shelf / "running" / catalog.RECIPIENTS).read_text().replace(colleague, f"{colleague}  # colleague")
+    )
+    monkeypatch.chdir(source)
+    assert cli.main(["publish", "--catalog", str(shelf), "--revoke", colleague, "--revoke", identity]) == 0
+    assert catalog.recipients(shelf, "running") == [identity]  # own key re-added, colleague gone with its comment
+    assert "colleague" not in (shelf / "running" / catalog.RECIPIENTS).read_text()
+    assert manifest(shelf)["version"] == 2
+    assert catalog.recipients(shelf, "missing") == []
+
+
+def test_entries_report_the_local_copy_and_a_broken_manifest(tmp_path: Path, shelf: Path) -> None:
+    source = built(tmp_path / "running")
+    assert publish(source, shelf) == 0
+    (shelf / "broken").mkdir()
+    (shelf / "broken" / catalog.MANIFEST).write_text("{")
+    root = tmp_path / "kbs"
+    broken, running = catalog.entries(shelf, root)
+    assert (broken.name, broken.manifest, running.local) == ("broken", None, "")
+    assert "broken/manifest.json" in str(broken.problem)
+    assert not catalog.outdated(running) and not catalog.outdated(broken)
+    assert pull(shelf, root / "running") == 0
+    built(source, "v2")
+    assert publish(source, shelf) == 0
+    [_, running] = catalog.entries(shelf, root)
+    assert (running.local, catalog.outdated(running)) == ("v1", True)
+
+
+def test_location_prefers_the_environment_over_the_saved_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = tmp_path / "config" / "catalog"
+    monkeypatch.delenv("KB_CATALOG", raising=False)
+    assert catalog.location(saved) is None
+    catalog.remember(tmp_path / "shelf", saved)
+    assert catalog.location(saved) == (tmp_path / "shelf").resolve()
+    monkeypatch.setenv("KB_CATALOG", "~/elsewhere")
+    assert catalog.location(saved) == Path.home() / "elsewhere"
+    monkeypatch.setenv("KB_CATALOG", "")  # empty is unset, not the current directory
+    assert catalog.location(saved) == (tmp_path / "shelf").resolve()
+    catalog.remember(None, saved)
+    catalog.remember(None, saved)
+    assert catalog.location(saved) is None
+
+
+def test_connect_clones_once_and_refuses_bad_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def gh(_cwd: Path, *args: str) -> str:
+        calls.append(args)
+        if args[1] == "create" and args[2] == "me/taken":
+            raise catalog.CatalogError("gh repo failed: name already exists")
+        (Path(args[3]) / ".git").mkdir(parents=True)
+        return ""
+
+    monkeypatch.setattr(catalog, "_gh", gh)
+    saved = tmp_path / "saved"
+    assert catalog.connect("not a repo", tmp_path / "c", saved=saved) == 1
+    (tmp_path / "plain").mkdir()
+    assert catalog.connect("me/kbs", tmp_path / "plain", saved=saved) == 1
+    assert catalog.connect("me/taken", tmp_path / "t", create=True, saved=saved) == 1
+    err = capsys.readouterr().err
+    assert "use owner/name" in err and "is not a git clone" in err and "already exists" in err
+    assert catalog.location(saved) is None and calls == [("repo", "create", "me/taken", "--private", "--add-readme",
+                                                          "--description", "kb catalog")]  # fmt: skip
+    calls.clear()
+    assert catalog.connect("me/kbs", tmp_path / "c", saved=saved) == 0
+    assert catalog.connect("me/kbs", tmp_path / "c", saved=saved) == 0  # an existing clone is only remembered
+    assert calls == [("repo", "clone", "me/kbs", str((tmp_path / "c").resolve()))]
+    assert catalog.location(saved) == (tmp_path / "c").resolve()
+
+
 def test_private_knowledge_base_keeps_its_configuration_inside_the_bundle(tmp_path: Path, shelf: Path, capsys) -> None:
     source = built(tmp_path / "running")
     assert publish(source, shelf, private=True) == 0
