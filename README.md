@@ -241,6 +241,7 @@ kb -C ~/kbs/running publish --recipient age1... # also encrypt to a colleague's 
 kb -C ~/kbs/running publish --revoke age1...    # stop encrypting later versions to a key
 kb -C ~/kbs/acme-contracts publish --private    # configuration only inside the bundle
 kb catalog                                      # name, version, size, the version ~/kbs holds, title
+kb catalog running                              # details: published, counts, bundle, storage, keys
 kb pull running                                 # install into ~/kbs/running and offer to register
 kb pull running --force                         # update an installed copy
 ```
