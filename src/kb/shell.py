@@ -301,7 +301,8 @@ class Shell:
         return Item(entry.name, detail + (manifest.get("title") or "(private)"), lambda: self.entry(shelf, entry, home))
 
     def entry(self, shelf: Path, entry: catalog.Entry, home: Path | None) -> None:
-        """The menu of one catalog entry: install or update it and, for a local knowledge base, publish and share."""
+        """The menu of one catalog entry: install or update it, show its details and, for a local knowledge base,
+        publish and share."""
         cursor: int | None = 0
         while entry.manifest is not None:
             items = self.entry_items(shelf, entry, home)
@@ -327,8 +328,10 @@ class Shell:
         if not own:  # pulling would replace the configuration and database this device builds and publishes
             verb = "install" if not local else ("reinstall" if local == f"v{version}" else "update")
             items.append(self.leaf(verb, f"v{version} into {target}", install, f"{verb} {name}"))
+        about = "manifest details and keys"
+        details = self.leaf("info", about, lambda: catalog.info(shelf, name, self.root), f"info {name}")
         if home is None:
-            return items
+            return [*items, details]
         private = bool((entry.manifest or {}).get("private"))
         return [
             *items,
@@ -340,6 +343,7 @@ class Shell:
                 "configuration readable in the catalog" if private else "configuration only inside the bundle",
                 self.publisher(shelf, name, home, private=not private),
             ),
+            details,
         ]
 
     def publisher(
