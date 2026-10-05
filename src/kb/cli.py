@@ -27,6 +27,7 @@ from kb import (
 
 DOWNLOADS = Path("downloads")
 INGEST_SCRIPT = "ingest.sh"  # written into the downloads folder, beside the per-source folders
+BROWSER_BATCH = 5  # links ingest.sh opens in the browser at once before it waits for Enter
 
 
 def _regex(value: str) -> str:
@@ -376,15 +377,18 @@ def report_manual(failed: list[sources.Source], args: argparse.Namespace) -> Non
     script = downloads.resolve() / INGEST_SCRIPT
     fetch.write_atomic(script, ingest_script(failed, args, table).encode())  # atomic: the script may be running
     script.chmod(0o755)
-    print("\nThen run this script; it stores the saved files (removing them from their folders) and ingests them:")
+    print(f"\nThen run this script. Run from a terminal, it opens the links in the browser, {BROWSER_BATCH} at a time,")
+    print("skipping folders that already hold a file, and waits for Enter after each batch; then it stores the")
+    print("saved files (removing them from their folders) and ingests them:")
     print(f"\n  {shlex.quote(str(script))}\n")
     print("A source still without a file is tried online again; if that fails, it is listed again and the")
     print("script rewritten. The script removes itself once every step succeeded.")
 
 
 def ingest_script(failed: list[sources.Source], args: argparse.Namespace, table: list[str]) -> str:
-    """A POSIX shell script running fetch, parse and extract for the failed sources, then index; every step runs
-    even when an earlier one failed, and the script exits 1 if any did."""
+    """A POSIX shell script that, on a terminal, opens the links of the failed sources in the browser in batches of
+    BROWSER_BATCH and waits for Enter after each, then runs fetch, parse and extract for them, then index; every
+    step runs even when an earlier one failed, and the script exits 1 if any did."""
     kb = [
         "uv",
         "run",
@@ -406,6 +410,8 @@ def ingest_script(failed: list[sources.Source], args: argparse.Namespace, table:
         ["extract", *registry, *only],
         ["index"],
     ]
+    pairs = [f"{shlex.quote(f'{args.downloads.resolve() / s.id}/')} {shlex.quote(s.url)}" for s in failed]
+    batches = [pairs[i : i + BROWSER_BATCH] for i in range(0, len(pairs), BROWSER_BATCH)]
     return "\n".join(
         [
             "#!/bin/sh",
@@ -413,6 +419,26 @@ def ingest_script(failed: list[sources.Source], args: argparse.Namespace, table:
             "# on its line, then run this script to store and ingest them:",
             "#",
             *(f"# {line}" for line in table),
+            "",
+            'open_link() { if command -v xdg-open >/dev/null 2>&1; then xdg-open "$1"; else open "$1"; fi; }',
+            "# Arguments: folder link pairs. Opens each link whose folder holds no file yet (dotfiles ignored, as",
+            "# kb fetch ignores them), then waits for Enter once any link was opened.",
+            "browse() {",
+            "  opened=0",
+            '  while [ "$#" -ge 2 ]; do',
+            '    if [ -z "$(ls -- "$1" 2>/dev/null)" ]; then',
+            '      printf \'%s\\n  save into %s\\n\' "$2" "$1"',
+            "      open_link \"$2\" >/dev/null 2>&1 || printf '  could not open it; open it by hand\\n'",
+            "      opened=1",
+            "    fi",
+            "    shift 2",
+            "  done",
+            "  [ \"$opened\" -eq 1 ] && { printf 'Save each page into its folder, then press Enter. '; read -r _; }",
+            "  return 0",
+            "}",
+            "if [ -t 0 ]; then",
+            *(f"  browse {' '.join(batch)}" for batch in batches),
+            "fi",
             "",
             f'kb() {{ {" ".join(kb)} "$@"; }}',
             "status=0",

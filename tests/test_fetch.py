@@ -1,8 +1,11 @@
+import argparse
 import dataclasses
 import email.message
 import io
 import re
+import shlex
 import sqlite3
+import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -13,7 +16,7 @@ import pytest
 import yaml
 
 from kb import db, fetch, sources
-from kb.cli import main
+from kb.cli import ingest_script, main
 from kb.sources import Source
 
 SOURCE = Source(
@@ -238,6 +241,44 @@ def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
 
     assert main([*base, "--source", "nope"]) == 1
     assert "unknown source ids: nope" in capsys.readouterr().err
+
+
+def test_ingest_script_opens_links_in_batches(tmp_path: Path) -> None:
+    failed = [dataclasses.replace(SOURCE, id=f"gb-{n}", url=f"https://example.org/{n}?a=1&b=2") for n in range(7)]
+    inbox = tmp_path / "down loads"
+    args = argparse.Namespace(
+        db=db.DEFAULT_PATH, domain=Path("domain.yaml"), file=Path("sources.yaml"), raw=Path("raw"), downloads=inbox
+    )
+    lines = ingest_script(failed, args, []).splitlines()
+    calls = [line.strip() for line in lines if line.startswith("  browse ")]
+    assert [len(shlex.split(call)) - 1 for call in calls] == [10, 4]  # folder and link pairs: 5, then 2
+    assert lines.index("if [ -t 0 ]; then") < lines.index("status=0")  # only on a terminal; before the ingest steps
+
+    for source in failed:
+        (inbox / source.id).mkdir(parents=True)
+    (inbox / "gb-0" / "a.pdf").write_bytes(b"%PDF")  # saved already: not opened again
+    (inbox / "gb-1" / ".DS_Store").write_bytes(b"x")  # dotfiles do not count, as in fetch.saved_by_hand
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "opened"
+    (bin_dir / "xdg-open").write_text(f'#!/bin/sh\nprintf "%s\\n" "$1" >> {shlex.quote(str(log))}\n')
+    (bin_dir / "xdg-open").chmod(0o755)
+    start = next(n for n, line in enumerate(lines) if line.startswith("open_link()"))
+    functions = "\n".join(lines[start : lines.index("}") + 1])
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+
+    def browse(call: str, answer: str) -> str:
+        sh = ["/bin/sh", "-c", f"{functions}\n{call}"]
+        return subprocess.run(sh, input=answer, capture_output=True, text=True, env=env, check=True).stdout  # noqa: S603
+
+    out = browse(calls[0], "\n")
+    assert log.read_text().splitlines() == [s.url for s in failed[1:5]]
+    assert f"save into {inbox / 'gb-1'}/" in out
+    assert out.endswith("then press Enter. ")
+
+    for source in failed[5:]:
+        (inbox / source.id / "a.html").write_text("<html>")
+    assert browse(calls[1], "") == ""  # every folder holds a file: nothing opened, no wait
 
 
 @pytest.mark.parametrize(
