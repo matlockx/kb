@@ -221,7 +221,7 @@ def test_catalog_publishes_shares_revokes_and_turns_private(
 
 
 @pytest.mark.usefixtures("me")
-def test_catalog_installs_and_offers_the_update(tmp_path: Path) -> None:
+def test_catalog_installs_and_offers_the_update(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     shelf = tmp_path / "shelf"
     shelf.mkdir()
     source = built(tmp_path / "elsewhere" / "running")
@@ -244,6 +244,11 @@ def test_catalog_installs_and_offers_the_update(tmp_path: Path) -> None:
     s.run()
     assert "update v1 → v2" in s.out.getvalue()
     assert not catalog.outdated(catalog.entries(shelf, tmp_path / "kbs")[0])
+
+    # home: running, + new, ⇅ catalog, age key; catalog: running, connect; entry: reinstall, publish, …, info last
+    s = make_shell(tmp_path, ["down", "down", "enter", "enter", "up", "enter"], cli=recorder, shelf=shelf)
+    s.run()
+    assert "local copy  v2\n" in capsys.readouterr().out
 
 
 def test_catalog_connects_a_clone_a_new_repository_or_a_folder_and_forgets_it(

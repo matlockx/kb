@@ -58,12 +58,12 @@ arrow keys or `j`/`k` move, enter chooses, `esc` or `q` goes back.
   use a local or synced folder; the choice is saved in `~/.config/kb/catalog`,
   and `KB_CATALOG` still takes precedence. With one it lists every published
   knowledge base with its version, size, the copy `~/kbs` holds and its title.
-  An entry installs, updates or reinstalls a pulled copy and, for a knowledge
-  base on this device, publishes a new version, shares it with another age
-  key, revokes a key, or turns it private or public. `+ publish` shares a local
-  knowledge base not yet in the catalog. The menu never offers to pull over a
-  knowledge base built on this device, and creates your age key before the
-  first publish.
+  An entry installs, updates or reinstalls a pulled copy, shows the details of
+  `kb catalog NAME` (`info`) and, for a knowledge base on this device,
+  publishes a new version, shares it with another age key, revokes a key, or
+  turns it private or public. `+ publish` shares a local knowledge base not yet
+  in the catalog. The menu never offers to pull over a knowledge base built on
+  this device, and creates your age key before the first publish.
 
 Every entry runs the same code as the matching command and prints its output
 above the menu. Editing files and the git history stay with their own tools;
