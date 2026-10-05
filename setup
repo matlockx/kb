@@ -1,4 +1,6 @@
 #!/bin/sh
 # Create a knowledge base, or build and register an existing one: setup NAME [--dir DIR]
-# See `kb setup --help`. Runs from any directory; uv syncs the engine environment on first use.
+# Without arguments, opens the interactive menu (`kb` alone). See `kb setup --help`.
+# Runs from any directory; uv syncs the engine environment on first use.
+[ $# -eq 0 ] && exec uv run --project "$(dirname "$0")" --quiet kb
 exec uv run --project "$(dirname "$0")" --quiet kb setup "$@"

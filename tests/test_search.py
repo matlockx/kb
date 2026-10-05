@@ -77,10 +77,10 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     parse.store(conn, "gb-code-retail@v1", [Section("code 3.5.3", (), gb_text)])
     parse.store(conn, "se-lag@v1", [Section("14 kap. 1 §", (), "En producent ska erbjuda återkallelse.")])
     six_months = stmt(gb_text, "Producers must run post-market recalls for at least six months.")
-    _store(conn, "gb-code@v1#0000", [six_months], "m", "p", "t")
-    _store(conn, "gb-code-retail@v1#0000", [six_months], "m", "p", "t")
+    _store(conn, "gb-code@v1#0000", None, [six_months], "m", "p", "t")
+    _store(conn, "gb-code-retail@v1#0000", None, [six_months], "m", "p", "t")
     swedish = stmt("En producent ska erbjuda återkallelse.", "Offer recalls.", tags=("cosmetics",))
-    _store(conn, "se-lag@v1#0000", [swedish], "m", "p", "t")
+    _store(conn, "se-lag@v1#0000", None, [swedish], "m", "p", "t")
     index.build_fts(conn)
     index.sync_vectors(conn, "chunk", index.chunk_texts(conn), index.EMBED_MODEL, fake_embed)
     index.sync_vectors(conn, "statement", index.statement_texts(conn), index.EMBED_MODEL, fake_embed)
@@ -100,7 +100,7 @@ def refs(result: dict[str, object]) -> list[tuple[str, str]]:
 def test_search_ranks_matching_sections_with_their_statements(
     conn: sqlite3.Connection, searcher: search.Searcher
 ) -> None:
-    result = search.search(conn, searcher, "post-market recall six months", limit=3)
+    result = search.search(conn, searcher, DOMAIN, "post-market recall six months", limit=3)
     assert refs(result)[0] in {("gb-code", "code 3.5.3"), ("gb-code-retail", "code 3.5.3")}
     first = result["results"][0]  # type: ignore[index]
     assert first["statements"][0]["summary"] == "Producers must run post-market recalls for at least six months."
@@ -109,46 +109,46 @@ def test_search_ranks_matching_sections_with_their_statements(
 
 
 def test_search_shows_identical_sections_once(conn: sqlite3.Connection, searcher: search.Searcher) -> None:
-    result = search.search(conn, searcher, "post-market recall six months", tags=["food"])
+    result = search.search(conn, searcher, DOMAIN, "post-market recall six months", tags=["food"])
     [section] = [r for r in result["results"] if r["section_ref"] == "code 3.5.3"]  # type: ignore[index, attr-defined]
     assert len(section["also_in"]) == 1
 
 
 def test_search_filters(conn: sqlite3.Connection, searcher: search.Searcher) -> None:
-    only_cosmetics = search.search(conn, searcher, "post-market recall", tags=["cosmetics"])
+    only_cosmetics = search.search(conn, searcher, DOMAIN, "post-market recall", tags=["cosmetics"])
     assert {s for s, _ in refs(only_cosmetics)} == {"se-lag"}
-    by_topic = search.search(conn, searcher, "marketing promotional", topics=["recalls"])
+    by_topic = search.search(conn, searcher, DOMAIN, "marketing promotional", topics=["recalls"])
     assert all(ref != "code 5.1.1 (part 1)" for _, ref in refs(by_topic))
 
 
 @pytest.mark.parametrize("query", ['" OR 1 NEAR(', "AND OR NOT *", 'post-market"; DROP TABLE chunks; --'])
 def test_search_escapes_fts_syntax(conn: sqlite3.Connection, searcher: search.Searcher, query: str) -> None:
-    search.search(conn, searcher, query)
+    search.search(conn, searcher, DOMAIN, query)
     assert conn.execute("SELECT count(*) FROM chunks").fetchone()[0] == 5
 
 
 def test_search_errors_and_notes(conn: sqlite3.Connection, searcher: search.Searcher) -> None:
     with pytest.raises(search.QueryError, match="unknown topics"):
-        search.search(conn, searcher, "x", topics=["nope"])
+        search.search(conn, searcher, DOMAIN, "x", topics=["nope"])
     with pytest.raises(search.QueryError, match="empty"):
-        search.search(conn, searcher, "  ")
-    assert "do not fill the gap" in search.search(conn, searcher, "x", tags=["textiles"])["note"]  # type: ignore[operator]
+        search.search(conn, searcher, DOMAIN, "  ")
+    assert "do not fill the gap" in search.search(conn, searcher, DOMAIN, "x", tags=["textiles"])["note"]  # type: ignore[operator]
     conn.execute("DELETE FROM vectors")
-    assert "keyword-only" in search.search(conn, searcher, "post-market")["note"]  # type: ignore[operator]
+    assert "keyword-only" in search.search(conn, searcher, DOMAIN, "post-market")["note"]  # type: ignore[operator]
     conn.execute("DROP TABLE chunks_fts")
     with pytest.raises(search.QueryError, match="run `kb index`"):
-        search.search(conn, searcher, "post-market")
+        search.search(conn, searcher, DOMAIN, "post-market")
 
 
 def test_get_section_joins_parts_and_suggests_refs(conn: sqlite3.Connection) -> None:
-    section = search.get_section(conn, "gb-code", "code 5.1.1")
+    section = search.get_section(conn, DOMAIN, "gb-code", "code 5.1.1")
     assert section["text"] == "Marketing must be truthful.\nPromotional offers must not target children."
     with pytest.raises(search.QueryError, match=r"similar refs: .*code 5\.1\.1 \(part 1\)"):
-        search.get_section(conn, "gb-code", "code 5.1.9")
+        search.get_section(conn, DOMAIN, "gb-code", "code 5.1.9")
     with pytest.raises(search.QueryError, match=r"'Annex A' in gb-code; similar refs: code 3\.5\.3"):
-        search.get_section(conn, "gb-code", "Annex A")
+        search.get_section(conn, DOMAIN, "gb-code", "Annex A")
     with pytest.raises(search.QueryError, match="unknown source_id 'gb-nope'"):
-        search.get_section(conn, "gb-nope", "x")
+        search.get_section(conn, DOMAIN, "gb-nope", "x")
 
 
 def test_topic_dedupes_filters_and_notes(conn: sqlite3.Connection) -> None:
@@ -172,7 +172,7 @@ def test_topic_lists_strongest_modality_first(conn: sqlite3.Connection) -> None:
             "VALUES ('gb-code-retail@v1#0001', 'gb-code-retail@v1', 1, 'code 3.5.1', '[]', ?, 'x')",
             (text,),
         )
-    _store(conn, "gb-code-retail@v1#0001", [
+    _store(conn, "gb-code-retail@v1#0001", None, [
         stmt("Producers should notify customers.", "Notify customers.", "should"),
         stmt("Producers must withdraw unsafe products.", "Withdraw unsafe products."),
     ], "m", "p", "t")  # fmt: skip
@@ -183,7 +183,7 @@ def test_topic_lists_strongest_modality_first(conn: sqlite3.Connection) -> None:
 
 
 def test_sources_lists_versions_and_topics(conn: sqlite3.Connection) -> None:
-    listed = search.sources(conn)
+    listed = search.sources(conn, DOMAIN)
     assert [s["source_id"] for s in listed["sources"]] == ["gb-code", "gb-code-retail", "se-lag"]  # type: ignore[attr-defined]
     se = listed["sources"][2]  # type: ignore[index]
     assert (se["statements"], se["sections"], se["tags"]) == (1, 1, ["cosmetics"])

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kb.domain import ConfigError, Domain, Topic
+from kb.domain import ConfigError, Domain, Topic, is_partial_date
 from kb.parse import current_version
 from kb.sources import Source
 
@@ -46,6 +46,7 @@ class Statement:
     modality: str
     topics: tuple[str, ...]
     applies_to: tuple[str, ...]
+    effective_from: str | None = None  # partial date the section states for the rule, when the prompt asks for it
 
 
 @dataclass
@@ -89,12 +90,14 @@ def prompt_version(system: str) -> str:
 
 
 def message(source: Source, section_ref: str, heading_path: list[str], text: str) -> str:
+    publisher = f"{source.publisher}, {source.scope}" if source.scope else source.publisher
     return (
-        f"Document: {source.title} ({source.publisher})\n"
+        f"Document: {source.title} ({publisher})\n"
         f"Type: {source.doc_type}\n"
         f"Language: {source.language}\n"
         f"Tags: {', '.join(source.tags)}\n"
-        f"Section: {section_ref}\n"
+        + (f"{source.extract_note}\n" if source.extract_note else "")
+        + f"Section: {section_ref}\n"
         f"Headings: {' > '.join(heading_path) or '-'}\n\n"
         f"<section>\n{text}\n</section>"
     )
@@ -179,9 +182,33 @@ def validate(
     applies = record.get("applies_to")
     if not isinstance(applies, list) or not applies or not set(applies) <= set(source.tags):
         raise ExtractionError(f"applies_to {applies!r} must be a non-empty subset of {list(source.tags)}")
+    effective = record.get("effective_from")
+    if effective is not None and not is_partial_date(effective):
+        raise ExtractionError(f"effective_from {effective!r} must be YYYY, YYYY-MM, YYYY-MM-DD or null")
     return Statement(
-        quote, normalise(summary), str(modality), tuple(dict.fromkeys(topics)), tuple(dict.fromkeys(applies))
+        quote,
+        normalise(summary),
+        str(modality),
+        tuple(dict.fromkeys(topics)),
+        tuple(dict.fromkeys(applies)),
+        effective if isinstance(effective, str) else None,
     )
+
+
+def ref_key(ref: str) -> tuple[str, ...]:
+    """Numbers and single letters of a section ref, so "Chapter 14 § 6 a" matches "14 kap. 6 a §"."""
+    return tuple(re.findall(r"\d+|\b[a-z]\b", ref))
+
+
+def original_chunks(conn: sqlite3.Connection, source: Source) -> dict[tuple[str, ...], str]:
+    """For a translation: section ref key -> chunk id in the original's current version, where the key is unique."""
+    if source.translation_of is None or (version := current_version(conn, source.translation_of)) is None:
+        return {}
+    by_key: dict[tuple[str, ...], list[str]] = {}
+    for chunk_id, ref in conn.execute("SELECT id, section_ref FROM chunks WHERE version_id = ?", (version[0],)):
+        if key := ref_key(ref):
+            by_key.setdefault(key, []).append(chunk_id)
+    return {key: ids[0] for key, ids in by_key.items() if len(ids) == 1}
 
 
 def extract_all(
@@ -259,6 +286,7 @@ def _extract_source(conn: sqlite3.Connection, source: Source, job: _Job, pool: T
         report.skipped = len(skipped)
     if job.text_re is not None:
         chunks = [c for c in chunks if job.text_re.search(c[3])]
+    originals = original_chunks(conn, source)
     pending: list[tuple[str, str, str, str, Future[str] | str]] = []
     for chunk_id, ref, heading_path, text in chunks:
         prompt = message(source, ref, json.loads(heading_path), text)
@@ -299,7 +327,7 @@ def _extract_source(conn: sqlite3.Connection, source: Source, job: _Job, pool: T
                 kept.append(validate(record, text, source, job.topic_ids, job.modalities))
             except ExtractionError as exc:
                 report.rejected.append(f"{ref}: {exc}")
-        _store(conn, chunk_id, kept, job.model, job.prompt_version, _stamp(job.clock))
+        _store(conn, chunk_id, originals.get(ref_key(ref)), kept, job.model, job.prompt_version, _stamp(job.clock))
         report.statements += len(kept)
     return report
 
@@ -331,7 +359,13 @@ def _drop(conn: sqlite3.Connection, chunk_ids: list[str]) -> None:
 
 
 def _store(
-    conn: sqlite3.Connection, chunk_id: str, kept: list[Statement], model: str, prompt_version: str, now: str
+    conn: sqlite3.Connection,
+    chunk_id: str,
+    original: str | None,
+    kept: list[Statement],
+    model: str,
+    prompt_version: str,
+    now: str,
 ) -> None:
     with conn:
         conn.execute(
@@ -343,9 +377,10 @@ def _store(
             statement_id = f"{chunk_id}/{number}"
             conn.execute(
                 "INSERT INTO statements (id, chunk_id, verbatim_quote, summary, modality, applies_to, model, "
-                "prompt_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "prompt_version, created_at, effective_from, original_chunk_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (statement_id, chunk_id, s.verbatim_quote, s.summary, s.modality, json.dumps(list(s.applies_to)),
-                 model, prompt_version, now),
+                 model, prompt_version, now, s.effective_from, original),
             )  # fmt: skip
             conn.executemany(
                 "INSERT INTO statement_topics (statement_id, topic_id) VALUES (?, ?)",

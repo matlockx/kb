@@ -20,6 +20,7 @@ A knowledge base is a directory holding:
 |---|---|
 | `domain.yaml` | vocabulary: name, instructions, doc types, tags, modalities, topics |
 | `sources.yaml` | the documents to ingest |
+| `scopes.yaml` | optional: the scopes sources belong to, such as jurisdictions (see below) |
 | `prompts/extract.md` | what the model extracts from each section |
 | `eval/golden.yaml` | test questions with their expected sections |
 | `data/kb.db`, `raw/` | built by the pipeline; keep them out of version control |
@@ -35,6 +36,26 @@ Run the engine from any directory without installing it (fish):
 alias setup ~/github/reg/setup && funcsave setup
 alias kb 'uv run --project ~/github/reg --quiet kb' && funcsave kb
 ```
+
+## Interactive menu
+
+`kb` (or `setup`) without arguments, on a terminal, opens a small menu in the
+style of the [bubbletea](https://github.com/charmbracelet/bubbletea) examples:
+arrow keys or `j`/`k` move, enter chooses, `esc` or `q` goes back.
+
+- The first screen lists every knowledge base in `~/kbs` and every other one
+  registered in `~/.omp/agent/mcp.json` as `kb -C DIR serve`, each with its
+  source and statement counts and whether its MCP server is registered.
+- A knowledge base opens a menu of its commands: check, build (the `setup
+  NAME` run below), fetch, parse, extract, index, eval, register, and publish
+  when `KB_CATALOG` is set. `kb -C DIR` without a command opens this menu for
+  the knowledge base in `DIR` directly.
+- `+ new` asks for a name and creates the directory as `setup NAME` does;
+  `↓ pull` (with `KB_CATALOG`) installs or updates one from the catalog;
+  `age key` prints your public key, creating it on first use.
+
+Every entry runs the same code as the matching command and prints its output
+above the menu. Editing files, git and `gh` stay with their own tools.
 
 ## Starting a new knowledge base
 
@@ -53,13 +74,16 @@ Fill in the four files; an agent can draft them from your sources:
     agent as the MCP server instructions. Pre-filled from your answer.
   - `doc_types`: the kinds of document you ingest, most authoritative first
     (for running plans, for example `[position_stand, review, study, book,
-    coaching_guide]`).
+    coaching_guide]`). An entry may be a mapping `{id, binding, note}`:
+    `binding: false` marks a type whose sections are not binding text (case
+    law, say), and `note` is shown with every section of the type.
   - `tags`: one facet to filter on (for example `[beginner, intermediate,
     advanced, 5k, 10k, half_marathon, marathon, ultra]`). Each source lists the
     tags it covers; each statement the subset it applies to.
   - `modalities`: what kind of statement the model records, strongest first,
     each with the description the model sees.
   - `topics`: a fixed taxonomy; each statement gets one to three ids.
+  - `scopes` and `availability`: optional, see below.
 - `prompts/extract.md`: who the statements are for and what counts as one.
   Keep the JSON shape and the verbatim-quote rules; the modality and topic
   lists are appended automatically.
@@ -78,6 +102,42 @@ Without a terminal (closed input) it never registers or creates a repository.
 `kb -C ~/kbs/running parse --sample 3` shows whether a source splits well; add
 `section_pattern`, `body_start` and the other parse settings until every
 section has a citable ref.
+
+## Scopes, availability and translations
+
+A second facet that every document has exactly one value of, such as the
+jurisdiction of a law, is a scope. `domain.yaml` turns it on with
+`scopes: {label: jurisdiction}`; `scopes.yaml` lists the values:
+
+```yaml
+- id: GB
+  name: Great Britain
+  aliases: [uk, united kingdom, british]   # further names a question may use
+  languages: [en]                          # a source in another language must be a translation
+  details: {regulator: Gambling Commission, eu: false}   # shown verbatim by kb_sources
+  availability:                            # only with availability in domain.yaml
+    casino: {status: licensed, source: gb-gambling-act-2005, note: "s. 65(2)(a)"}
+    poker: {status: unknown}
+```
+
+Every source then names its `scope`. Search filters by scope; without one, a
+scope whose name or alias the question uses ("in Portugal") becomes the filter
+and is reported as `scopes_inferred`.
+
+`availability: {tags: [...], values: [...], unknown: unknown}` in
+`domain.yaml` makes every scope state, for each of those tags, one of the
+values with the source that backs it, or the unknown value without one; for
+example whether a product can be licensed in a jurisdiction. An
+`effective_from` date (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`) still ahead is shown
+with `in_force: false`.
+
+A source with `translation_of: <id>` is an unofficial translation of another
+source in the same scope and another language. Its sections say `binding:
+false`, and each of its statements names the original's section with the same
+numbers as `original_section`. `kb_topic` lists the statements of a translated
+original through its translation. `extract_note` adds one line to every
+extraction message of a source, for example to tell the model how that
+document words its rules.
 
 ## Using it from omp, Claude Code and other MCP clients
 
@@ -133,7 +193,7 @@ one place only: the same name in both makes one shadow the other.
 `data/kb.db` holding the source-of-truth tables, the extraction cache (so the
 copy can take new sources without paying again for the sections already
 extracted) and the configuration files (`domain.yaml`, `sources.yaml`,
-`prompts/`, `eval/`, verbatim in `kb_files`). It leaves out what `kb index`
+`scopes.yaml`, `prompts/`, `eval/`, verbatim in `kb_files`). It leaves out what `kb index`
 rebuilds, the full-text tables and the vectors, and the raw downloads. For the
 running-coach knowledge base that is 10 MB instead of 470 MB; a first pull
 rebuilds the index in about 8 minutes on an M-series Mac.
@@ -269,11 +329,21 @@ versions untouched and makes the command exit 1. TLS is verified against the
 operating system's trust store. Only `https` URLs are accepted. Requests send
 `Accept-Language: *`, without which several bot filters answer 403.
 
+A few hosts need more than a GET. `www.boe.es` is asked for
+`Accept: application/xml` (its open-data API answers 400 without it). A
+Normattiva Akoma Ntoso export URL (`/do/atto/caricaAKN?dataGU=…&codiceRedaz=…`)
+opens the act's detail page first in the same cookie session and asks for the
+text in force today (`dataVigenza`); an HTML answer fails. A BWB manifest URL
+(`repository.officiele-overheidspublicaties.nl/bwb/BWBR…/manifest.xml`) is
+followed to the consolidation its `_latestItem` names. XML is stored as
+`.xml`, JSON as `.json`.
+
 A block or challenge page must not hide a good copy, so these fail too and the
 download is discarded: a Cloudflare challenge (the `cf-mitigated` header or its
 challenge script), an AWS WAF challenge (the `x-amzn-waf-action` header on an
-empty 202, as EUR-Lex answers), HTML where the current version is a PDF or
-another non-HTML document, and a download with no body sections where the
+empty 202, as EUR-Lex answers), an Anubis proof-of-work page (as BAILII
+serves), HTML where the current version is a PDF or another non-HTML document,
+and a download with no body sections where the
 current version has some. A challenge needs a browser that runs its script; no
 HTTP library gets past it. If the page really changed that way, delete the old
 versions (and the statements citing them, as for re-chunking below) to accept
@@ -331,12 +401,23 @@ ones worth keeping to `sources.yaml` by hand; `kb fetch` follows no links.
 
 `kb parse` extracts text from the current version of each source and splits
 it into chunks with a citable `section_ref` such as `2.4`, `Chapter 3 § 5` or
-`p. 12`. HTML (and XHTML) and PDF are read; any other content type fails with a
-message naming the reader to add in `src/kb/extract.py`. Sources use the
+`p. 12`. HTML (and XHTML), PDF, XML legislation and GOV.UK Content API JSON
+are read; any other content type fails with a message naming the reader to add
+in `src/kb/extract.py`. XML (typed `application/xml` or `text/xml`, or an XML
+declaration on a body not typed as HTML) is read by its root element: LexDania
+(`Dokument`, retsinformation.dk), CLML (`Legislation`, legislation.gov.uk,
+`s. 65`, `Sch. 18 para. 9`), BWB (`toestand`, wetten.overheid.nl, repealed
+articles dropped), Akoma Ntoso (`akomaNtoso`, Finlex and Normattiva) and BOE
+(`response`, the latest version of each block, annex points as `Anexo 3.1`).
+These readers mark each section start themselves, so they need no
+`section_pattern`. `application/json` is read as a GOV.UK Content API item: its
+title and the HTML of `details.body`. Sources use the
 `section_pattern`, `chapter_pattern` and `body_start` regexes in
 `sources.yaml`, plus `body_end` (drop an appendix or the next article in a
 volume) and `section_label` / `chapter_label` (normalise refs). Patterns see
-HTML headings in Markdown form (`## 1. Introduction`). `skip_sections`, a
+HTML headings in Markdown form (`## 1. Introduction`), and lines inside a
+`<blockquote>` prefixed with `> `, so `^\d+\.$` skips paragraph numbers a
+judgment quotes from another judgment. `skip_sections`, a
 regex matched at the start of a section ref, keeps those sections searchable
 but out of extraction. `skip_classes`, a list of HTML class names, drops every
 element carrying one of them, content included, before patterns run; on
@@ -374,8 +455,11 @@ empty for none) replaces that list. The default model is
 command, for example in a sandbox.
 
 The system prompt is `prompts/extract.md` followed by the modalities and topics
-from `domain.yaml`. Each statement carries a verbatim quote, a one-sentence
-summary, a modality, one to three topics and the tags it applies to. A record
+from `domain.yaml`; each message names the document, its publisher and scope,
+type, language, tags and `extract_note`. Each statement carries a verbatim
+quote, a one-sentence summary, a modality, one to three topics, the tags it
+applies to and, when the prompt asks for it and the section states it, an
+`effective_from` date. A record
 is kept only if its quote appears in the section word for word (ignoring
 whitespace, and hyphens between letters, because PDF extraction breaks words at
 line ends) and every field validates; rejects are reported. Raw model output
@@ -401,19 +485,22 @@ appears verbatim in several documents is shown once with `also_in`.
 
 | Tool | Returns |
 |---|---|
-| `kb_search(query, tags?, topics?, limit?)` | ranked sections with excerpt, citation fields and their statements |
+| `kb_search(query, scopes?, tags?, topics?, limit?)` | ranked sections with excerpt, citation fields and their statements |
 | `kb_get(source_id, section_ref)` | one section's full text and statements; similar refs when not found |
-| `kb_topic(topic, tags?, limit?)` | every statement on one topic, strongest modality and doc type first, deduplicated |
-| `kb_sources()` | documents with version, fetch date, tags and counts, plus the topic ids |
+| `kb_topic(topic, scopes?, tags?, limit?)` | every statement on one topic, strongest modality and doc type first, deduplicated; with scopes, per scope with its availability |
+| `kb_sources(scope?)` | documents with version, fetch date, tags and counts, the topic ids and each scope's details and availability |
 
 Every result carries `source_id`, `section_ref`, `url`, `version` and
-`fetched_at`. `kb serve` opens the database read-only.
+`fetched_at`; with non-binding doc types or translations, sections also carry
+`binding` and a `note`. `kb serve` adds the columns of a newer schema to an
+older database once at start, then opens it read-only.
 
 ## Evaluation and audits
 
 `kb eval` runs the golden questions and reports whether an expected section is
 in the top five, and re-checks that every stored quote still appears in its
-section; it exits 1 below 90%.
+section; it exits 1 below 90%. A question may carry `tags` and `scopes` to
+filter its search; without `scopes`, a scope the question names applies.
 
 `scripts/` holds three quality checks. Run them from a knowledge base
 directory with the engine's environment, for example

@@ -85,7 +85,7 @@ def publish(home: Path, catalog: Path, name: str, add: list[str], private: bool 
             "published_at": published_at,
             "private": private,
             "title": None if private else _title(files.get("domain.yaml", "")),
-            "counts": _counts(snapshot),
+            "counts": counts(snapshot),
             "content_sha256": content,
             "recipients": recipients,
             "bundle": {"file": packed.name, "sha256": bundle.sha256(packed), "size": packed.stat().st_size},
@@ -130,8 +130,7 @@ def show(catalog: Path, root: Path | None = None) -> int:
     if not catalog.is_dir():
         print(f"catalog {catalog} is not a directory", file=sys.stderr)
         return 1
-    _git_pull(catalog)
-    entries = sorted(p.parent for p in catalog.glob(f"*/{MANIFEST}") if not p.parent.name.startswith("."))
+    entries = [catalog / name for name in names(catalog)]
     if not entries:
         print(f"no knowledge bases in {catalog}")
         return 0
@@ -152,6 +151,12 @@ def show(catalog: Path, root: Path | None = None) -> int:
             f"{local:<14} {title}"
         )
     return 0
+
+
+def names(catalog: Path) -> list[str]:
+    """The knowledge bases in the catalog, sorted; a git catalog is pulled first."""
+    _git_pull(catalog)
+    return sorted(p.parent.name for p in catalog.glob(f"*/{MANIFEST}") if not p.parent.name.startswith("."))
 
 
 def pull(
@@ -305,7 +310,8 @@ def _gh(catalog: Path, *args: str) -> str:
     return done.stdout
 
 
-def _counts(path: Path) -> dict[str, int]:
+def counts(path: Path) -> dict[str, int]:
+    """Rows in documents and statements of the database at path, opened read-only."""
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         return {t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("documents", "statements")}  # noqa: S608

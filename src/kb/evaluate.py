@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from kb import search
-from kb.domain import ConfigError
+from kb.domain import ConfigError, Domain
 from kb.index import load_model
 from kb.statements import comparable
 
@@ -19,6 +19,7 @@ class Question:
     question: str
     expect: tuple[tuple[str, str], ...]  # (source_id glob, section_ref glob); any match is a hit
     tags: tuple[str, ...] = ()
+    scopes: tuple[str, ...] = ()  # scope ids the search is limited to; without them, scopes the question names apply
 
 
 def load(path: Path) -> list[Question]:
@@ -34,7 +35,11 @@ def load(path: Path) -> list[Question]:
             expect = tuple((str(e["source"]), str(e["section"])) for e in entry["expect"])
             if not expect or not str(entry["question"]).strip():
                 raise ValueError
-            questions.append(Question(str(entry["question"]), expect, tuple(entry.get("tags") or ())))
+            questions.append(
+                Question(
+                    str(entry["question"]), expect, tuple(entry.get("tags") or ()), tuple(entry.get("scopes") or ())
+                )
+            )
         except (KeyError, TypeError, ValueError):
             errors.append(f"{path}: entry {number}: needs question and expect: [{{source, section}}, ...]")
     if errors:
@@ -65,7 +70,7 @@ def bad_quotes(conn: sqlite3.Connection) -> list[str]:
     return [rid for rid, quote, text in rows if comparable(quote) not in comparable(text)]
 
 
-def run(db_path: Path, golden: Path, k: int, minimum: float) -> int:
+def run(db_path: Path, domain: Domain, golden: Path, k: int, minimum: float) -> int:
     try:
         questions = load(golden)
     except ConfigError as exc:
@@ -76,7 +81,9 @@ def run(db_path: Path, golden: Path, k: int, minimum: float) -> int:
     hits = 0
     try:
         for q in questions:
-            results = search.search(conn, searcher, q.question, list(q.tags) or None, limit=k)["results"]
+            results = search.search(
+                conn, searcher, domain, q.question, list(q.scopes) or None, list(q.tags) or None, limit=k
+            )["results"]
             rank = next((n for n, r in enumerate(results, start=1) if is_hit(r, q.expect)), None)  # type: ignore[arg-type]
             hits += rank is not None
             top = ", ".join(f"{r['source_id']} {r['section_ref']}" for r in results[:3])  # type: ignore[index]

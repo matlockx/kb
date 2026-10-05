@@ -1,8 +1,10 @@
+import dataclasses
 import email.message
 import io
 import re
 import sqlite3
 import urllib.error
+import urllib.request
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -88,9 +90,15 @@ def test_download_failures(opener: fetch.Opener, message: str) -> None:
         fetch.download(SOURCE.url, opener=opener, max_bytes=4)
 
 
-def test_download_rejects_a_challenge_page_served_with_200() -> None:
-    page = b"<html><script>window._cf_chl_opt={cType: 'managed'}</script></html>"
-    with pytest.raises(fetch.FetchError, match="Cloudflare challenge page"):
+@pytest.mark.parametrize(
+    ("page", "message"),
+    [
+        (b"<html><script>window._cf_chl_opt={cType: 'managed'}</script></html>", "Cloudflare challenge page"),
+        (b'<script id="anubis_challenge" type="application/json">{}</script>', "Anubis challenge page"),
+    ],
+)
+def test_download_rejects_a_challenge_page_served_with_200(page: bytes, message: str) -> None:
+    with pytest.raises(fetch.FetchError, match=message):
         fetch.download(SOURCE.url, opener=opener_returning(FakeResponse(page, Content_Type="text/html")))
 
 
@@ -238,7 +246,8 @@ def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
         ({"a.pdf": b"%PDF", "b.pdf": b"%PDF"}, "2 files in .*; keep one of a.pdf, b.pdf"),
         ({"a.docx": b"PK"}, r"a\.docx is not a \.pdf, \.html, \.htm, \.xhtml file"),
         ({"a.pdf": b""}, "a.pdf is empty"),
-        ({"a.html": b"<script>window._cf_chl_opt={}</script>"}, "a.html is a Cloudflare challenge page"),
+        ({"a.html": b"<script>window._cf_chl_opt={}</script>"}, r"a.html is a challenge page \(Cloudflare\)"),
+        ({"a.html": b'<script id="anubis_challenge">{}</script>'}, r"a.html is a challenge page \(Anubis\)"),
     ],
 )
 def test_unusable_file_saved_by_hand_fails_and_stays(
@@ -291,10 +300,24 @@ def test_markup_only_change_keeps_the_current_version(conn: sqlite3.Connection, 
 CHALLENGE = fetch.Download(b"<html><body><p>Verifying you are human</p></body></html>", "text/html", None, None)
 
 
+BWB_ACT = (
+    '<?xml version="1.0"?><toestand><wetgeving><meta-data>{meta}</meta-data><wettekst>'
+    "<artikel><kop><label>Artikel</label><nr>1</nr></kop><al>{text}</al></artikel></wettekst></wetgeving></toestand>"
+)
+
+
+def xml_download(text: str, meta: str = "2026-09-24") -> fetch.Download:
+    return fetch.Download(BWB_ACT.format(meta=meta, text=text).encode(), "application/xml", None, None)
+
+
 @pytest.mark.parametrize(
     "good",
-    [fetch.Download(b"%PDF-1.4", "application/pdf", None, None), html_download("Menu", "Labels must list allergens.")],
-    ids=["html-for-a-pdf", "no-body-sections"],
+    [
+        fetch.Download(b"%PDF-1.4", "application/pdf", None, None),
+        html_download("Menu", "Labels must list allergens."),
+        xml_download("Labels must list allergens."),
+    ],
+    ids=["html-for-a-pdf", "no-body-sections", "html-for-xml"],
 )
 def test_block_page_does_not_replace_the_current_version(
     conn: sqlite3.Connection, tmp_path: Path, good: fetch.Download
@@ -318,3 +341,97 @@ def test_html_may_replace_an_untyped_current_version(conn: sqlite3.Connection, t
     untyped = fetch.Download(b"<body><p>Menu</p><h2>1 Scope</h2><p>Labels list allergens.</p></body>", None, None, None)
     assert fetch.store(conn, SOURCE, untyped, raw, now()).status == "new"
     assert fetch.store(conn, SOURCE, html_download("Menu", "Labels list nuts."), raw, now()).status == "changed"
+
+
+def test_xml_versions_compare_on_their_sections(conn: sqlite3.Connection, tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    ticks = iter(clock())
+    now = lambda: next(ticks).isoformat(timespec="seconds").replace("+00:00", "Z")  # noqa: E731
+    assert fetch.store(conn, SOURCE, xml_download("Labels list nuts."), raw, now()).status == "new"
+    again = fetch.store(conn, SOURCE, xml_download("Labels list nuts.", meta="2026-09-25"), raw, now())
+    assert again.status == "unchanged"
+    assert "markup-only change" in again.detail
+    assert fetch.store(conn, SOURCE, xml_download("Labels list eggs."), raw, now()).status == "changed"
+    assert sorted(Path(path).suffix for path, *_ in versions(conn)) == [".xml", ".xml"]
+
+
+def test_download_sends_accept_only_to_hosts_that_need_it() -> None:
+    seen: list[str | None] = []
+
+    def opener(request: urllib.request.Request, timeout: float, context: object) -> FakeResponse:  # noqa: ARG001
+        seen.append(request.get_header("Accept"))
+        return FakeResponse(b"<x/>", url=request.full_url)
+
+    fetch.download("https://www.boe.es/datosabiertos/api/legislacion-consolidada/id/X/texto", opener=opener)
+    fetch.download(SOURCE.url, opener=opener)
+    assert seen == ["application/xml", None]
+
+
+NORMATTIVA = "https://www.normattiva.it/do/atto/caricaAKN?dataGU=20240403&codiceRedaz=24G00060"
+
+
+def test_normattiva_primes_the_session_and_asks_for_today() -> None:
+    seen: list[str] = []
+
+    def opener(request: urllib.request.Request, timeout: float, context: object) -> FakeResponse:  # noqa: ARG001
+        seen.append(request.full_url)
+        kind = "text/xml" if "caricaAKN" in request.full_url else "text/html"
+        return FakeResponse(b"<akomaNtoso/>", url=request.full_url, Content_Type=kind)
+
+    got = fetch.normattiva(NORMATTIVA, opener, today=datetime(2026, 9, 25, tzinfo=UTC))
+    assert got.body == b"<akomaNtoso/>"
+    assert seen == [
+        "https://www.normattiva.it/atto/caricaDettaglioAtto?atto.dataPubblicazioneGazzetta=2024-04-03"
+        "&atto.codiceRedazionale=24G00060",
+        f"{NORMATTIVA}&dataVigenza=20260925",
+    ]
+
+
+def test_normattiva_rejects_the_error_page_and_other_urls() -> None:
+    def opener(request: urllib.request.Request, timeout: float, context: object) -> FakeResponse:  # noqa: ARG001
+        return FakeResponse(b"<html>Errore</html>", url=request.full_url, Content_Type="text/html")
+
+    with pytest.raises(fetch.FetchError, match="instead of Akoma Ntoso"):
+        fetch.normattiva(NORMATTIVA, opener)
+    with pytest.raises(fetch.FetchError, match="not a Normattiva AKN export URL"):
+        fetch.normattiva(SOURCE.url, opener)
+
+
+def test_bwb_manifest_resolves_to_latest_item() -> None:
+    manifest = "https://repository.officiele-overheidspublicaties.nl/bwb/BWBR0044773/manifest.xml"
+    latest = "2022-07-15_0/xml/BWBR0044773_2022-07-15_0.xml"
+    bodies = {manifest: f'<work label="BWBR0044773" _latestItem="{latest}">'.encode()}
+
+    def get(url: str) -> fetch.Download:
+        return fetch.Download(bodies[url], "application/xml", None, None)
+
+    assert (
+        fetch.resolve(manifest, get) == f"https://repository.officiele-overheidspublicaties.nl/bwb/BWBR0044773/{latest}"
+    )
+    assert fetch.resolve("https://example.org/x", get) == "https://example.org/x"
+    for bad in (b'<work _latestItem="../../evil">', b"<work/>"):
+        bodies[manifest] = bad
+        with pytest.raises(fetch.FetchError, match="_latestItem"):
+            fetch.resolve(manifest, get)
+
+
+def test_fetch_all_follows_pointers_and_sessions_by_default(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = "https://repository.officiele-overheidspublicaties.nl/bwb/BWBR0000001/manifest.xml"
+    item = "https://repository.officiele-overheidspublicaties.nl/bwb/BWBR0000001/2026-01-01_0/xml/act.xml"
+    seen: list[str] = []
+
+    def download(url: str, opener: object = None) -> fetch.Download:  # noqa: ARG001
+        seen.append(url)
+        if url == manifest:
+            return fetch.Download(b'<work _latestItem="2026-01-01_0/xml/act.xml">', "application/xml", None, None)
+        return xml_download("Labels list nuts.")
+
+    monkeypatch.setattr(fetch, "download", download)
+    ticks = clock()
+    sources_ = [dataclasses.replace(SOURCE, url=manifest), dataclasses.replace(SOURCE, url=NORMATTIVA)]
+    results = fetch.fetch_all(conn, sources_, tmp_path / "raw", clock=lambda: next(ticks))
+    assert [r.status for r in results] == ["new", "unchanged"]
+    assert seen[:2] == [manifest, item]
+    assert seen[3].endswith("&dataVigenza=20260924")  # the clock's date; seen[2] opens the session
