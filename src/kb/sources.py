@@ -14,7 +14,8 @@ from kb.domain import ConfigError, Domain
 STRING_FIELDS = ("id", "publisher", "title", "url", "language", "doc_type")
 PATTERN_FIELDS = ("section_pattern", "chapter_pattern", "body_start", "body_end", "skip_sections")
 LABEL_FIELDS = ("chapter_label", "first_chapter", "section_label")
-ALL_FIELDS = frozenset({*STRING_FIELDS, *PATTERN_FIELDS, *LABEL_FIELDS, "tags", "skip_classes"})
+OPTIONAL_FIELDS = ("scope", "translation_of", "extract_note")
+ALL_FIELDS = frozenset({*STRING_FIELDS, *PATTERN_FIELDS, *LABEL_FIELDS, *OPTIONAL_FIELDS, "tags", "skip_classes"})
 ID_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 LANGUAGE_RE = re.compile(r"[a-z]{2}")
 
@@ -37,6 +38,9 @@ class Source:
     section_label: str | None = None  # re.Match.expand template for section refs, e.g. "\\g<num> §"
     skip_sections: str | None = None  # regex matched at the start of a section ref; extraction skips those sections
     skip_classes: tuple[str, ...] = ()  # HTML class names whose elements, content included, parse leaves out
+    scope: str | None = None  # id in scopes.yaml; set exactly when the domain has scopes
+    translation_of: str | None = None  # id of the source this one translates; that original is the binding text
+    extract_note: str | None = None  # one line added to every extraction message of this source
 
 
 def load(path: Path, domain: Domain) -> list[Source]:
@@ -65,7 +69,7 @@ def load(path: Path, domain: Domain) -> list[Source]:
             Source(
                 **{k: entry[k] for k in STRING_FIELDS},
                 tags=tuple(entry["tags"]),
-                **{k: entry.get(k) for k in (*PATTERN_FIELDS, "chapter_label", "section_label")},
+                **{k: entry.get(k) for k in (*PATTERN_FIELDS, "chapter_label", "section_label", *OPTIONAL_FIELDS)},
                 first_chapter=entry.get("first_chapter", ""),
                 skip_classes=tuple(entry.get("skip_classes", ())),
             )
@@ -76,6 +80,10 @@ def load(path: Path, domain: Domain) -> list[Source]:
         if source.id in seen:
             errors.append(f"{path}: duplicate id {source.id!r}")
         seen.add(source.id)
+    by_id = {s.id: s for s in found}
+    errors += [
+        f"{path}: {s.id}: {p}" for s in found if s.translation_of is not None for p in _translation_problems(s, by_id)
+    ]
     if errors:
         raise ConfigError("\n".join(errors))
     return found
@@ -108,6 +116,16 @@ def _entry_problems(entry: dict[object, object], domain: Domain) -> list[str]:
         problems.append(f"unknown tags {unknown}; allowed {list(domain.tags)} (domain.yaml)")
     elif len(set(tags)) != len(tags):
         problems.append("tags contains duplicates")
+
+    if domain.scope_label is None and "scope" in entry:
+        problems.append("scope needs scopes in domain.yaml")
+    elif domain.scope_label is not None and (not isinstance(entry.get("scope"), str) or not entry["scope"].strip()):
+        problems.append(f"scope must be the id of a {domain.scope_label} in scopes.yaml")
+    problems += [
+        f"{k} must be a non-empty string"
+        for k in ("translation_of", "extract_note")
+        if k in entry and (not isinstance(entry[k], str) or not entry[k].strip())
+    ]
 
     skip = entry.get("skip_classes")
     if "skip_classes" in entry and (
@@ -161,16 +179,37 @@ def _pattern_problems(key: str, pattern: object) -> list[str]:
     return []
 
 
+def _translation_problems(source: Source, by_id: dict[str, Source]) -> list[str]:
+    """A translation points at an original in another language, in the same scope, that is no translation itself."""
+    original = by_id.get(str(source.translation_of))
+    if original is None:
+        return [f"translation_of {source.translation_of!r} is not a source id"]
+    if original.id == source.id:
+        return ["translation_of points at itself"]
+    problems = []
+    if original.translation_of is not None:
+        problems.append(f"translation_of {original.id!r} is a translation itself")
+    if original.language == source.language:
+        problems.append(f"translation_of {original.id!r} has the same language")
+    if original.scope != source.scope:
+        problems.append(f"translation_of {original.id!r} has another scope")
+    return problems
+
+
 def sync(conn: sqlite3.Connection, sources: list[Source]) -> list[str]:
     """Upsert every source into documents; return ids in the database that the registry no longer lists."""
-    rows = [(s.id, s.publisher, s.title, s.url, s.language, s.doc_type, json.dumps(list(s.tags))) for s in sources]
+    rows = [
+        (s.id, s.publisher, s.title, s.url, s.language, s.doc_type, json.dumps(list(s.tags)), s.scope, s.translation_of)
+        for s in sources
+    ]
     with conn:
         conn.executemany(
-            """INSERT INTO documents (id, publisher, title, url, language, doc_type, tags)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO documents (id, publisher, title, url, language, doc_type, tags, scope, translation_of)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (id) DO UPDATE SET
                  publisher = excluded.publisher, title = excluded.title, url = excluded.url,
-                 language = excluded.language, doc_type = excluded.doc_type, tags = excluded.tags""",
+                 language = excluded.language, doc_type = excluded.doc_type, tags = excluded.tags,
+                 scope = excluded.scope, translation_of = excluded.translation_of""",
             rows,
         )
     listed = {s.id for s in sources}

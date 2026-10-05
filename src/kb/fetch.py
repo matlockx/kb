@@ -2,7 +2,9 @@
 
 import hashlib
 import http.client
+import http.cookiejar
 import os
+import re
 import sqlite3
 import ssl
 import tempfile
@@ -13,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import truststore
 
@@ -28,14 +31,27 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; kb/0.1; +https://github.com/matlockx/reg)",
     "Accept-Language": "*",
 }
+# Hosts that refuse a request without an explicit Accept header (BOE's open-data API answers 400).
+ACCEPT = {"www.boe.es": "application/xml"}
 # Verify against the OS trust store, as curl and browsers do; the OpenSSL bundle
 # Python ships with can lack roots that some publishers use (e.g. HARICA, Sectigo R46).
 TLS = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 TIMEOUT_S = 60
 MAX_BYTES = 50 * 1024 * 1024
-EXTENSIONS = {"application/pdf": "pdf", "text/html": "html", "application/xhtml+xml": "html"}
+EXTENSIONS = {
+    "application/pdf": "pdf",
+    "text/html": "html",
+    "application/xhtml+xml": "html",
+    "application/xml": "xml",
+    "text/xml": "xml",
+    "application/json": "json",
+}
 SAVED_TYPES = {".pdf": "application/pdf", ".html": "text/html", ".htm": "text/html", ".xhtml": "application/xhtml+xml"}
-CHALLENGE_MARK = b"_cf_chl_opt"  # the script of a Cloudflare challenge page
+# Script markers of challenge pages served with 200, by the bot filter that serves them.
+CHALLENGE_MARKS = {
+    b"_cf_chl_opt": "Cloudflare",
+    b'id="anubis_challenge"': "Anubis",  # proof-of-work page, e.g. bailii.org
+}
 
 Status = Literal["new", "changed", "unchanged", "failed"]
 
@@ -65,7 +81,10 @@ Opener = Callable[..., Any]  # urllib.request.urlopen or a test double
 def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int = MAX_BYTES) -> Download:
     """GET url; raise FetchError on HTTP or network failure, a non-https redirect, a bot challenge, or an empty,
     truncated or oversized body."""
-    request = urllib.request.Request(url, headers=HEADERS)  # noqa: S310 - registry enforces https
+    sent = dict(HEADERS)
+    if accept := ACCEPT.get(urlparse(url).hostname or ""):
+        sent["Accept"] = accept
+    request = urllib.request.Request(url, headers=sent)  # noqa: S310 - registry enforces https
     try:
         with opener(request, timeout=TIMEOUT_S, context=TLS) as response:
             final = response.geturl()
@@ -91,8 +110,10 @@ def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int =
     if length and length.isdigit() and int(length) != len(body):
         raise FetchError(f"truncated: got {len(body)} of {length} bytes")
     content_type = headers.get("Content-Type")
-    if headers.get("cf-mitigated") == "challenge" or CHALLENGE_MARK in body:
+    if headers.get("cf-mitigated") == "challenge":
         raise FetchError("Cloudflare challenge page")
+    if filter_name := _challenge(body):
+        raise FetchError(f"{filter_name} challenge page")
     return Download(
         body=body,
         content_type=content_type.split(";")[0].strip().lower() if content_type else None,
@@ -211,15 +232,19 @@ def fetch_all(
     """Fetch every source; a failure is reported and leaves that source's versions untouched.
 
     A file saved by hand into inbox/<source id>/ is stored instead of downloading the URL, and removed from the
-    inbox once it is stored (kept when it fails).
+    inbox once it is stored (kept when it fails). A pointer URL (see resolve) is followed first.
     """
-    get = get or download  # resolved per call, so a patched module-level download is honoured
+    if get is None:  # get_source looks download up per call, so a patched module-level download is honoured
+
+        def get(url: str) -> Download:
+            return get_source(url, clock())
+
     results = []
     for source in sources:
         try:
             saved = saved_by_hand(inbox / source.id) if inbox is not None else None
             if saved is None:
-                got = get(source.url)
+                got = get(resolve(source.url, get))
             else:
                 got = Download(_read_saved(saved), SAVED_TYPES[saved.suffix.lower()], None, None)
         except FetchError as exc:
@@ -234,6 +259,61 @@ def fetch_all(
     return results
 
 
+NORMATTIVA_AKN = re.compile(
+    r"https://www\.normattiva\.it/do/atto/caricaAKN\?dataGU=(\d{4})(\d{2})(\d{2})&codiceRedaz=(\w+)"
+)
+
+
+def get_source(url: str, today: datetime | None = None) -> Download:
+    """download(url), except for the Normattiva export that needs a session (see normattiva)."""
+    return normattiva(url, today=today) if NORMATTIVA_AKN.fullmatch(url) else download(url)
+
+
+def normattiva(url: str, opener: Opener | None = None, today: datetime | None = None) -> Download:
+    """Italian consolidated text as Akoma Ntoso, in force today.
+
+    The export answers with an HTML error page unless the session has first opened the act's detail page, so
+    one cookie jar spans both requests. The URL in the registry omits dataVigenza; the date is not part of the
+    XML, so a daily date changes the hash only when the text does.
+    """
+    match = NORMATTIVA_AKN.fullmatch(url)
+    if match is None:
+        raise FetchError(f"not a Normattiva AKN export URL: {url}")
+    if opener is None:
+        session = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), urllib.request.HTTPSHandler(context=TLS)
+        )
+
+        def opener(request: urllib.request.Request, timeout: float, context: object) -> Any:  # noqa: ARG001
+            return session.open(request, timeout=timeout)
+
+    year, month, day, code = match.groups()
+    download(
+        "https://www.normattiva.it/atto/caricaDettaglioAtto?"
+        f"atto.dataPubblicazioneGazzetta={year}-{month}-{day}&atto.codiceRedazionale={code}",
+        opener,
+    )
+    got = download(f"{url}&dataVigenza={(today or datetime.now(UTC)):%Y%m%d}", opener)
+    if got.content_type not in {"text/xml", "application/xml"}:
+        raise FetchError(f"Normattiva returned {got.content_type} instead of Akoma Ntoso")
+    return got
+
+
+BWB_MANIFEST = re.compile(r"https://repository\.officiele-overheidspublicaties\.nl/bwb/(BWBR\d+)/manifest\.xml")
+
+
+def resolve(url: str, get: Callable[[str], Download]) -> str:
+    """The document URL behind a pointer: a Dutch BWB manifest names its current consolidation in _latestItem."""
+    match = BWB_MANIFEST.fullmatch(url)
+    if match is None:
+        return url
+    manifest = get(url).body.decode("utf-8", errors="replace")
+    latest = re.search(r'_latestItem="([^"]+)"', manifest)
+    if latest is None or ".." in latest.group(1):
+        raise FetchError("BWB manifest has no usable _latestItem")
+    return f"https://repository.officiele-overheidspublicaties.nl/bwb/{match.group(1)}/{latest.group(1)}"
+
+
 def _read_saved(path: Path) -> bytes:
     try:
         body = path.read_bytes()
@@ -241,9 +321,14 @@ def _read_saved(path: Path) -> bytes:
         raise FetchError(f"{path}: {exc.strerror}") from exc
     if not body:
         raise FetchError(f"{path} is empty")
-    if CHALLENGE_MARK in body:
-        raise FetchError(f"{path} is a Cloudflare challenge page")
+    if filter_name := _challenge(body):
+        raise FetchError(f"{path} is a challenge page ({filter_name})")
     return body
+
+
+def _challenge(body: bytes) -> str | None:
+    """The bot filter named in CHALLENGE_MARKS whose challenge page body is; None when it is no challenge page."""
+    return next((name for mark, name in CHALLENGE_MARKS.items() if mark in body), None)
 
 
 def write_atomic(path: Path, body: bytes) -> None:

@@ -15,7 +15,7 @@ import zstandard
 
 from kb import db
 
-CONFIG_FILES = ("domain.yaml", "sources.yaml")
+CONFIG_FILES = ("domain.yaml", "sources.yaml", "scopes.yaml")
 CONFIG_DIRS = ("prompts", "eval")
 FTS_TABLES = ("chunks_fts", "statements_fts")  # created by index.build_fts
 LEVEL = 19  # zstd level: publishing is rare, the bundle is downloaded on every pull

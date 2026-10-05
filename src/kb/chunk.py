@@ -39,7 +39,8 @@ def split(
     Sections start at blocks the format marks (Block.ref, set by a structured-format reader); otherwise at
     blocks matching section_pattern, whose named group "ref" is the section reference; else at every heading
     (HTML) or every page (PDF). Patterns see HTML headings in Markdown form ("## 1 Introduction"), so they can
-    require a heading level.
+    require a heading level, and lines inside an HTML blockquote prefixed with "> ", so a pattern anchored at the
+    line start skips paragraph numbers a judgment quotes from another one.
 
     chapter_pattern (group "ref") matches chapter headings and prefixes the refs that follow, for texts
     that restart numbering per chapter ("3 kap. 6 §"). chapter_label, a re.Match.expand template such as
@@ -157,7 +158,8 @@ def _starts(
 
 
 def _marked(block: Block) -> str:
-    return f"{'#' * block.level} {block.text}" if block.level else block.text
+    text = f"{'#' * block.level} {block.text}" if block.level else block.text
+    return f"> {text}" if block.quoted else text
 
 
 def _is_title(text: str) -> bool:

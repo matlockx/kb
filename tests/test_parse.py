@@ -165,10 +165,10 @@ def test_links_of_an_unreadable_pdf_raise_value_error(tmp_path: Path) -> None:
 
 
 def test_unsupported_content_type_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "doc.json"
-    path.write_text('{"title": "Code"}', encoding="utf-8")
-    with pytest.raises(ValueError, match="no reader for content type 'application/json'"):
-        extract.extract(path, "application/json")
+    path = tmp_path / "doc.txt"
+    path.write_text("Code", encoding="utf-8")
+    with pytest.raises(ValueError, match="no reader for content type 'text/plain'"):
+        extract.extract(path, "text/plain")
 
 
 # --- chunk --------------------------------------------------------------------
@@ -239,6 +239,20 @@ def test_chapter_label_and_first_chapter() -> None:
 def test_repeated_refs_are_numbered() -> None:
     blocks = [Block("17. Membership."), Block("268. Amends:"), Block("17. Quoted section."), Block("17. Again.")]
     assert refs(chunk.split(blocks, r"^(?P<ref>\d+)\. ")) == ["17", "268", "17 (2)", "17 (3)"]
+
+
+def test_paragraph_numbers_quoted_from_another_judgment_do_not_start_sections() -> None:
+    html = (
+        "<body><p>1.</p><p>The appeal concerns Navitaire.</p><blockquote><p>126.</p><p>Business logic is not"
+        " protected.</p></blockquote><p>As quoted.</p><p>2.</p><p>Dismissed.</p></body>"
+    )
+    blocks = extract.from_html(html)
+    assert [b.quoted for b in blocks] == [False, False, True, True, False, False, False]
+    sections = chunk.split(blocks, r"^(?P<ref>\d+)\.$")
+    assert [(s.ref, s.text) for s in sections] == [
+        ("1", "1.\nThe appeal concerns Navitaire.\n126.\nBusiness logic is not protected.\nAs quoted."),
+        ("2", "2.\nDismissed."),
+    ]
 
 
 def test_heading_and_page_fallbacks() -> None:
@@ -324,9 +338,9 @@ def test_parse_failures_leave_chunks_untouched(conn: sqlite3.Connection, tmp_pat
     parse.parse_all(conn, [SOURCE], raw)
     before = conn.execute("SELECT * FROM chunks").fetchall()
 
-    add_version(conn, raw, "bad.json", b"{}", "2026-02-01T00:00:00Z", "application/json")
+    add_version(conn, raw, "bad.txt", b"{}", "2026-02-01T00:00:00Z", "text/plain")
     [result] = parse.parse_all(conn, [SOURCE], raw)
-    assert result.error == "no reader for content type 'application/json'; add one to kb/extract.py"
+    assert result.error == "no reader for content type 'text/plain'; add one to kb/extract.py"
     assert conn.execute("SELECT * FROM chunks").fetchall() == before
 
 

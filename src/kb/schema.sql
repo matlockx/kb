@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS documents (
   url       TEXT NOT NULL,
   language  TEXT NOT NULL,                           -- ISO 639-1
   doc_type  TEXT NOT NULL,                           -- one of domain.yaml doc_types
-  tags      TEXT NOT NULL                            -- JSON array of domain.yaml tags
+  tags      TEXT NOT NULL,                           -- JSON array of domain.yaml tags
+  scope          TEXT,                               -- scopes.id; NULL when the domain has no scopes
+  translation_of TEXT                                -- documents.id of the original this text translates
 );
 
 -- One row per distinct downloaded content; a changed hash is a new version.
@@ -53,7 +55,9 @@ CREATE TABLE IF NOT EXISTS statements (
   applies_to     TEXT NOT NULL,                      -- JSON array, a subset of the document's tags
   model          TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  effective_from    TEXT,                            -- YYYY, YYYY-MM or YYYY-MM-DD, when the section states it
+  original_chunk_id TEXT                             -- chunks.id of the same section in the original, for a translation
 );
 CREATE INDEX IF NOT EXISTS statements_chunk ON statements (chunk_id);
 
@@ -80,6 +84,26 @@ CREATE TABLE IF NOT EXISTS statement_topics (
   PRIMARY KEY (statement_id, topic_id)
 );
 CREATE INDEX IF NOT EXISTS statement_topics_topic ON statement_topics (topic_id);
+
+-- One row per entry in scopes.yaml, e.g. a jurisdiction.
+CREATE TABLE IF NOT EXISTS scopes (
+  id        TEXT PRIMARY KEY,
+  name      TEXT NOT NULL,
+  aliases   TEXT NOT NULL,                           -- JSON array of further names, matched as whole words
+  languages TEXT NOT NULL,                           -- JSON array, ISO 639-1
+  details   TEXT NOT NULL                            -- JSON object shown verbatim, e.g. {"regulator": "..."}
+);
+
+-- The value each scope states per availability tag in scopes.yaml, e.g. whether a product can be licensed.
+CREATE TABLE IF NOT EXISTS availability (
+  scope          TEXT NOT NULL,                      -- scopes.id
+  tag            TEXT NOT NULL,                      -- one of domain.yaml availability.tags
+  status         TEXT NOT NULL,                      -- one of domain.yaml availability.values or its unknown value
+  source_id      TEXT,                               -- documents.id backing the status; NULL only for unknown
+  effective_from TEXT,                               -- YYYY, YYYY-MM or YYYY-MM-DD from which the status applies
+  note           TEXT,
+  PRIMARY KEY (scope, tag)
+);
 
 -- Embedding vectors for semantic search, rebuilt incrementally by `kb index`. Derived: text_sha256 marks
 -- which text a vector was made from, so changed chunks and statements are embedded again.

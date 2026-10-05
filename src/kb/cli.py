@@ -7,7 +7,23 @@ import statistics
 import sys
 from pathlib import Path
 
-from kb import bundle, catalog, db, domain, evaluate, extract, fetch, index, keys, parse, setup, sources, statements
+from kb import (
+    bundle,
+    catalog,
+    db,
+    domain,
+    evaluate,
+    extract,
+    fetch,
+    index,
+    keys,
+    parse,
+    scopes,
+    setup,
+    shell,
+    sources,
+    statements,
+)
 
 DOWNLOADS = Path("downloads")
 INGEST_SCRIPT = "ingest.sh"  # written into the downloads folder, beside the per-source folders
@@ -27,7 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         "--file", type=Path, default=Path("sources.yaml"), help="source registry (default: %(default)s)"
     )
 
-    parser = argparse.ArgumentParser(prog="kb", description="Cited, versioned knowledge base.")
+    parser = argparse.ArgumentParser(
+        prog="kb",
+        description="Cited, versioned knowledge base. Without a command on a terminal, opens an interactive menu "
+        "to create, build, register, publish and pull knowledge bases.",
+    )
     parser.add_argument(
         "-C",
         dest="home",
@@ -39,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--domain", type=Path, default=Path("domain.yaml"), help="domain definition (default: %(default)s)"
     )
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="command")
 
     cmd = commands.add_parser(
         "sources", parents=[registry], help="validate the domain and source registry and sync them into the database"
@@ -72,7 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         help="split the current version of each source into section chunks",
         description="Extract text from the current version of every source (or those given with --source) and "
         "replace its chunks. sources.yaml can set section_pattern and chapter_pattern (regexes with a "
-        "(?P<ref>...) group; HTML headings appear as '## Title'), body_start and body_end (regexes for the first "
+        "(?P<ref>...) group; HTML headings appear as '## Title', blockquote lines as '> text'), body_start and "
+        "body_end (regexes for the first "
         "body line and the first line after the body), section_label, chapter_label and first_chapter (ref "
         "templates and prefixes), and skip_classes (HTML class names whose elements are left out). Without a "
         "pattern, sections split at HTML headings or PDF pages. Prints chunk "
@@ -223,6 +244,12 @@ def main(argv: list[str] | None = None) -> int:
         "--omp-config", type=Path, default=setup.OMP_MCP, help="omp MCP config to register in (default: %(default)s)"
     )
     args = parser.parse_args(argv)
+    if args.command is None:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            return shell.run(main, args.home)  # before the chdir below, so a relative -C resolves here
+        parser.print_usage(sys.stderr)
+        print("kb: a command is required without a terminal", file=sys.stderr)
+        return 2
     if args.home is not None:
         try:
             os.chdir(args.home)
@@ -244,7 +271,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "index":
         return run_index(args.db)
     if args.command == "eval":
-        return evaluate.run(args.db, args.file, args.k, args.min)
+        try:
+            evaluated = serving_domain(args.domain, args.db)
+        except domain.ConfigError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        return evaluate.run(args.db, evaluated, args.file, args.k, args.min)
 
     try:
         if args.command == "serve":
@@ -254,12 +286,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         defined = domain.load(args.domain)
         found = sources.load(args.file, defined)
+        registry = scopes.load(scopes.PATH, defined, found) if defined.scope_label else []
         system = statements.system_prompt(args.prompt, defined) if args.command == "extract" else None
     except domain.ConfigError as exc:
         print(exc, file=sys.stderr)
         return 1
     if args.command == "sources" and args.check:
-        print(f"domain and {len(found)} sources valid")
+        listed = f", {len(registry)} {defined.scope_label} entries" if defined.scope_label else ""
+        print(f"domain{listed} and {len(found)} sources valid")
         return 0
     if args.command == "links":
         return run_links(found, args.id, args.db, args.raw)
@@ -277,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         stale = sources.sync(conn, found)
         statements.sync_topics(conn, defined.topics)
+        scopes.sync(conn, registry)
         results = fetch.fetch_all(conn, selected, args.raw, inbox=args.downloads) if args.command == "fetch" else None
         parsed = parse.parse_all(conn, selected, args.raw) if args.command == "parse" else None
         extracted = None
