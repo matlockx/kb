@@ -4,6 +4,7 @@ import email.message
 import io
 import re
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import urllib.error
@@ -265,11 +266,11 @@ def test_ingest_script_opens_links_in_batches(tmp_path: Path) -> None:
     (bin_dir / "xdg-open").chmod(0o755)
     start = next(n for n, line in enumerate(lines) if line.startswith("open_link()"))
     functions = "\n".join(lines[start : lines.index("}") + 1])
-    env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
 
-    def browse(call: str, answer: str) -> str:
+    def browse(call: str, answer: str, path: str = f"{bin_dir}:/usr/bin:/bin") -> str:
         sh = ["/bin/sh", "-c", f"{functions}\n{call}"]
-        return subprocess.run(sh, input=answer, capture_output=True, text=True, env=env, check=True).stdout  # noqa: S603
+        run = subprocess.run(sh, input=answer, capture_output=True, text=True, env={"PATH": path}, check=True)  # noqa: S603
+        return run.stdout
 
     out = browse(calls[0], "\n")
     assert log.read_text().splitlines() == [s.url for s in failed[1:5]]
@@ -279,6 +280,13 @@ def test_ingest_script_opens_links_in_batches(tmp_path: Path) -> None:
     for source in failed[5:]:
         (inbox / source.id / "a.html").write_text("<html>")
     assert browse(calls[1], "") == ""  # every folder holds a file: nothing opened, no wait
+
+    (bin_dir / "xdg-open").rename(bin_dir / "open")  # macOS: no xdg-open, so open is used
+    (bin_dir / "ls").symlink_to(str(shutil.which("ls")))  # PATH holds nothing else: no system xdg-open
+    (inbox / "gb-5" / "a.html").unlink()
+    log.unlink()
+    assert browse(calls[1], "\n", str(bin_dir)).endswith("then press Enter. ")
+    assert log.read_text().splitlines() == [failed[5].url]
 
 
 @pytest.mark.parametrize(
