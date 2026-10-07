@@ -33,8 +33,8 @@ model cache (`~/.cache/huggingface`) is shared, read-only.
 Run the engine from any directory without installing it (fish):
 
 ```sh
-alias setup ~/github/reg/setup && funcsave setup
-alias kb 'uv run --project ~/github/reg --quiet kb' && funcsave kb
+alias setup ~/github/kb/setup && funcsave setup
+alias kb 'uv run --project ~/github/kb --quiet kb' && funcsave kb
 ```
 
 ## Interactive menu
@@ -174,13 +174,13 @@ looks like this:
     "running": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--project", "/Users/me/github/reg", "--quiet", "kb", "-C", "/Users/me/kbs/running", "serve"],
+      "args": ["run", "--project", "/Users/me/github/kb", "--quiet", "kb", "-C", "/Users/me/kbs/running", "serve"],
       "timeout": 120000
     },
     "web": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--project", "/Users/me/github/reg", "--quiet", "kb", "-C", "/Users/me/github/reg/examples/web-principles", "serve"],
+      "args": ["run", "--project", "/Users/me/github/kb", "--quiet", "kb", "-C", "/Users/me/github/kb/examples/web-principles", "serve"],
       "timeout": 120000
     }
   }
@@ -192,7 +192,7 @@ looks like this:
 **Claude Code:**
 
 ```sh
-claude mcp add running -s user -- uv run --project ~/github/reg --quiet kb -C ~/kbs/running serve
+claude mcp add running -s user -- uv run --project ~/github/kb --quiet kb -C ~/kbs/running serve
 ```
 
 omp also imports Claude Code's user-level servers, so register each server in
@@ -307,6 +307,9 @@ What the encryption does and does not do:
    `kb_sources`).
 5. A golden set of questions (`eval/golden.yaml`) measures whether search finds
    the right section.
+
+[`docs/architecture.md`](docs/architecture.md) follows the whole flow step by
+step, with diagrams of every command, the data model and the sharing protocol.
 
 ## Usage
 
@@ -524,7 +527,7 @@ filter its search; without `scopes`, a scope the question names applies.
 
 `scripts/` holds three quality checks. Run them from a knowledge base
 directory with the engine's environment, for example
-`uv run --project ~/github/reg python ~/github/reg/scripts/audit_structure.py`:
+`uv run --project ~/github/kb python ~/github/kb/scripts/audit_structure.py`:
 
 - `audit_structure.py [data/kb.db]`: one TSV row per source with chunk counts,
   preamble size, oversized and tiny chunks, duplicate refs, numbering gaps,
