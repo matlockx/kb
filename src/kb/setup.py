@@ -17,7 +17,7 @@ from kb.sources import ID_RE
 ENGINE = Path(__file__).resolve().parents[2]  # the checkout whose environment serves every knowledge base
 KB_ROOT = Path.home() / "kbs"
 OMP_MCP = Path.home() / ".omp" / "agent" / "mcp.json"
-TEMPLATE_FILES = ("domain.yaml", "sources.yaml", "prompts/extract.md", "eval/golden.yaml")
+TEMPLATE_FILES = ("domain.yaml", "sources.yaml", "prompts/extract.md", "eval/golden.yaml", "AGENTS.md")
 MCP_TIMEOUT_MS = 120_000  # the first search loads the embedding model, which outlasts omp's 30 s default
 
 Ask = Callable[[str], str]  # prompt -> answer, e.g. input

@@ -105,7 +105,8 @@ def build(db_path: Path, domain: Domain, embed_loader: Callable[[], search.Embed
     @server.tool(
         annotations=READ_ONLY,
         structured_output=False,
-        description="List the ingested documents with version, fetch date, tags and counts, and the topic ids."
+        description="List the ingested documents with version, fetch date, tags, counts and trust (disputed, "
+        "unverified, secondary or official, with the reason), and the topic ids."
         + (
             f" Also lists each {label} with its details and availability; scope limits the list to one {label}."
             if label

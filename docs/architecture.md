@@ -71,6 +71,7 @@ Three ideas carry the design:
 | `~/.cache/huggingface` | the embedding model, shared read-only | `kb index` |
 | `~/.config/kb/identity.txt` (`$KB_AGE_IDENTITY`) | your age identity | `kb keygen` |
 | `~/.config/kb/catalog` | the saved catalog location | the menu's connect |
+| `~/.config/kb/name` | your name, shown beside your key in `recipients.txt` and on reviews | `kb name`, asked on first publish or review |
 | `~/.omp/agent/mcp.json` | MCP server registrations | `setup`, `pull`, the menu |
 | catalog directory | `NAME/manifest.json`, `recipients.txt`, bundles or release references | `kb publish` |
 
@@ -150,6 +151,7 @@ erDiagram
     scopes ||--o{ documents : "contains"
     scopes ||--o{ availability : "states"
     documents |o--o{ availability : "backs"
+    document_versions ||--o{ reviews : "judged by"
     documents |o--o{ documents : "translation_of"
     chunks |o--o{ statements : "original_chunk_id"
     chunks ||--o| vectors : "kind chunk"
@@ -174,6 +176,14 @@ erDiagram
         TEXT content_type
         TEXT fetched_at
         TEXT last_checked_at "newest is current"
+    }
+    reviews {
+        TEXT id PK
+        TEXT version_id FK
+        TEXT reviewer "kb name"
+        TEXT verdict "vetted or disputed"
+        TEXT note
+        TEXT created_at
     }
     chunks {
         TEXT id PK "version + ord"
@@ -259,7 +269,7 @@ versions and their chunks stay in the database untouched.
 
 | Kind | Tables |
 |---|---|
-| source of truth | `documents`, `document_versions`, `chunks`, `statements`, `statement_topics`, `topics`, `scopes`, `availability` |
+| source of truth | `documents`, `document_versions`, `chunks`, `statements`, `statement_topics`, `topics`, `scopes`, `availability`, `reviews` |
 | cache (deleting costs model calls only) | `extraction_cache` |
 | derived, rebuilt by `kb index` | `chunks_fts`, `statements_fts`, `vectors` |
 | filled only in a published snapshot | `kb_files`, `kb_meta` |
@@ -910,7 +920,9 @@ without a command opens the knowledge base menu for `DIR` directly.
 
 | Command | Exit 1 when |
 |---|---|
-| `sources`, `links` | configuration invalid; `links`: unknown source, no version, unreadable file |
+| `sources`, `links` | configuration invalid, a source whose publisher is not declared in `domain.yaml` or whose URL is off its domains; `links`: unknown source, no version, unreadable file |
+| `quality` | `data/kb.db` missing |
+| `review` | `data/kb.db` missing, unknown source, no fetched version, a dispute without a note |
 | `fetch` | configuration invalid, unknown `--source`, any source failed (then `downloads/ingest.sh` exists) |
 | `parse` | configuration invalid, unknown `--source`, any source failed or refused to re-chunk |
 | `extract` | configuration invalid, unknown `--source`, any section failed; rejected records do not count |

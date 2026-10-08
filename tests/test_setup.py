@@ -48,6 +48,8 @@ def test_create_writes_a_valid_template_with_the_answer(tmp_path: Path) -> None:
     assert (home / ".gitignore").read_text() == "data/\nraw/\ndownloads/\n"
     assert (home / "eval/golden.yaml").exists()
     assert (home / "sources.yaml").exists()
+    assert [p.name for p in defined.publishers] == ["Example Society"]  # a placeholder the author replaces
+    assert "kb sources --check" in (home / "AGENTS.md").read_text(encoding="utf-8")
     assert not (home / ".git").exists()
 
 

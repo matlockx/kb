@@ -18,6 +18,14 @@ instructions: >-
 # lists statements from earlier types first.
 doc_types: [standard, guidance, article]
 
+# Who publishes the sources, and the only domains their URLs may be on; `kb
+# sources --check` fails for any other. official: true for a body that issues
+# the texts itself.
+publishers:
+  - name: W3C Technical Architecture Group
+    domains: [w3.org]
+    official: true
+
 # Facet values. Each source lists the tags it covers; each statement lists the
 # subset it applies to (applies_to); kb_search and kb_topic filter on them.
 tags: [browsers, websites, standards]

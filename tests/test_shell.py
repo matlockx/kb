@@ -331,3 +331,121 @@ def test_kb_with_only_a_directory_opens_that_menu_on_a_terminal(
     assert cli.main(["-C", str(tmp_path)]) == 0
     assert cli.main([]) == 0
     assert opened == [tmp_path, None]
+
+
+@pytest.mark.usefixtures("me")
+def test_the_entry_menu_says_whether_the_local_copy_is_published(tmp_path: Path) -> None:
+    home = built(tmp_path / "kbs" / "running")
+    shelf = tmp_path / "shelf"
+    shelf.mkdir()
+    assert catalog.publish(home, shelf, "running", [], None) == 0
+    # home: running, + new, ⇅ catalog, age key, name; catalog: running, connect
+    s = make_shell(tmp_path, ["down", "down", "enter", "enter"], shelf=shelf)
+    s.run()
+    assert "running v1 · 1 keys · public · matches v1" in s.out.getvalue()
+
+    built(home, "v2")
+    s = make_shell(tmp_path, ["down", "down", "enter", "enter"], shelf=shelf)
+    s.run()
+    assert "running v1 · 1 keys · public · unpublished changes" in s.out.getvalue()
+
+
+@pytest.mark.usefixtures("me")
+def test_sharing_asks_for_the_owner_name_and_the_revoke_menu_shows_it(tmp_path: Path) -> None:
+    home = built(tmp_path / "kbs" / "running")
+    shelf = tmp_path / "shelf"
+    shelf.mkdir()
+    other = age.generate(tmp_path / "keys" / "other.txt")
+    pressed = [
+        "down", "down", "enter",  # home: running, + new, ⇅ catalog, age key, name
+        "enter", "enter",  # catalog: + publish, connect; publish running
+        "enter",  # catalog: running, connect; open running
+        "down", "enter",  # entry: publish, share; share
+        "down", "enter",  # revoke menu
+    ]  # fmt: skip
+    s = make_shell(tmp_path, pressed, replies=(other, "Ana Smith"), shelf=shelf)
+    s.run()
+    assert catalog.labelled(shelf, "running")[other] == "Ana Smith"
+    assert catalog.labelled(shelf, "running")[age.public_keys(age.load(age.identity_path()))[0]].startswith("Tester (")
+    shown = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", s.out.getvalue())
+    assert "revoke a key of running" in shown
+    assert f"Ana Smith   {other[:16]}… remove and publish" in shown
+    assert (home / "domain.yaml").exists()
+
+
+def test_name_is_set_from_the_home_menu_and_defaults_to_the_saved_name(tmp_path: Path) -> None:
+    recorder = Recorder()
+    s = make_shell(tmp_path, ["down", "down", "down", "enter"], replies=("Ana",), cli=recorder)
+    s.run()  # home: + new, ⇅ catalog, age key, name
+    assert recorder.calls == [["name", "Ana"]]
+    s = make_shell(tmp_path, ["down", "down", "down", "enter"], replies=("",), cli=recorder)
+    s.run()
+    assert recorder.calls[-1] == ["name", "Tester"]  # an empty answer keeps the saved name
+
+
+def reviewable(tmp_path: Path) -> Path:
+    home = knowledge_base(tmp_path / "kbs", "web")
+    (home / "domain.yaml").write_text(
+        (Path(__file__).parents[1] / "examples" / "web-principles" / "domain.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    conn = db.connect(home / db.DEFAULT_PATH)
+    with conn:
+        conn.execute(
+            "INSERT INTO documents (id, publisher, title, url, language, doc_type, tags) VALUES "
+            "('w3c', 'W3C Technical Architecture Group', 'T', 'https://www.w3.org/TR/x/', 'en', 'guidance', '[]')"
+        )
+    conn.close()
+    return home
+
+
+def test_review_menu_vets_and_disputes_a_source_and_a_dispute_needs_its_reason(tmp_path: Path) -> None:
+    home = reviewable(tmp_path)
+    recorder = Recorder()
+    # open web; check, build, fetch, parse, extract, index, eval, quality, review
+    to_review = ["enter", *["down"] * 8, "enter"]
+    s = make_shell(tmp_path, [*to_review, "enter", "down", "enter"], replies=("A mirror.",), cli=recorder)
+    s.run()  # review: w3c; source: vet, dispute
+    assert (
+        "w3c" in s.out.getvalue() and "official · W3C Technical Architecture Group is an official" in s.out.getvalue()
+    )
+    assert recorder.calls == [["-C", str(home.resolve()), "review", "w3c", "--dispute", "--note", "A mirror."]]
+
+    recorder.calls.clear()
+    s = make_shell(tmp_path, [*to_review, "enter", "down", "enter"], replies=("",), cli=recorder)
+    s.run()
+    assert recorder.calls == []  # a dispute without a reason is not recorded
+
+    s = make_shell(tmp_path, [*to_review, "enter", "enter"], replies=("",), cli=recorder)
+    s.run()  # vet, no note
+    assert recorder.calls == [["-C", str(home.resolve()), "review", "w3c", "--vet"]]
+    s = make_shell(tmp_path, [*to_review, "enter", "down", "down", "enter"], cli=recorder)
+    s.run()  # history
+    assert recorder.calls[-1] == ["-C", str(home.resolve()), "review", "w3c"]
+
+
+def test_review_menu_reports_a_missing_database_and_an_empty_one(tmp_path: Path) -> None:
+    to_review = ["enter", *["down"] * 8, "enter"]
+    home = reviewable(tmp_path)
+    (home / db.DEFAULT_PATH).unlink()
+    s = make_shell(tmp_path, to_review)
+    s.run()
+    assert "does not exist; run kb fetch first" in s.out.getvalue()
+
+    db.connect(home / db.DEFAULT_PATH).close()
+    s = make_shell(tmp_path, to_review)
+    s.run()
+    assert "no sources in the database yet" in s.out.getvalue()
+
+    (home / "domain.yaml").write_text("name: x\n", encoding="utf-8")
+    s = make_shell(tmp_path, to_review)
+    s.run()
+    assert "instructions must be a non-empty string" in s.out.getvalue()
+
+
+def test_quality_runs_the_kb_command_for_that_directory(tmp_path: Path) -> None:
+    home = knowledge_base(tmp_path / "kbs", "running")
+    recorder = Recorder()
+    s = make_shell(tmp_path, ["enter", *["down"] * 7, "enter"], cli=recorder)
+    s.run()
+    assert recorder.calls == [["-C", str(home.resolve()), "quality"]]

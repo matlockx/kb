@@ -8,9 +8,13 @@ from pathlib import Path
 import yaml
 
 SLUG_RE = re.compile(r"[a-z0-9]+(?:[_-][a-z0-9]+)*")
-FIELDS = frozenset({"name", "instructions", "doc_types", "tags", "modalities", "topics", "scopes", "availability"})
+FIELDS = frozenset(
+    {"name", "instructions", "doc_types", "tags", "modalities", "topics", "scopes", "availability", "publishers"}
+)
 DOC_TYPE_FIELDS = frozenset({"id", "binding", "note"})
+PUBLISHER_FIELDS = frozenset({"name", "domains", "official"})
 AVAILABILITY_FIELDS = frozenset({"tags", "values", "unknown"})
+DOMAIN_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
 PARTIAL_DATE_RE = re.compile(r"\d{4}(?:-\d{2}(?:-\d{2})?)?")
 
 
@@ -29,6 +33,15 @@ class Topic:
     id: str
     label: str
     description: str
+
+
+@dataclass(frozen=True)
+class Publisher:
+    """Who publishes sources, and under which domains their URLs may be; sources.yaml names one by its name."""
+
+    name: str
+    domains: tuple[str, ...]  # a source URL's host is one of these or a subdomain of one
+    official: bool  # whether the publisher issues the texts itself (a regulator, a legislature), not a secondary source
 
 
 @dataclass(frozen=True)
@@ -52,6 +65,7 @@ class Domain:
     doc_type_notes: dict[str, str] = field(default_factory=dict)  # doc type -> note shown on its sections
     scope_label: str | None = None  # singular noun for the scope facet, e.g. jurisdiction; None without scopes
     availability: Availability | None = None  # only with scopes
+    publishers: tuple[Publisher, ...] = ()  # declared publishers; empty in a domain written before they existed
 
 
 def load(path: Path) -> Domain:
@@ -87,6 +101,7 @@ def parse(text: str, origin: str) -> Domain:
     problems += _entries_problems("modalities", raw.get("modalities"), ("id", "description"))
     problems += _entries_problems("topics", raw.get("topics"), ("id", "label", "description"))
     problems += _scope_problems(raw)
+    problems += _publisher_problems(raw.get("publishers"))
     if problems:
         raise ConfigError("\n".join(f"{origin}: {p}" for p in problems))
     spec = raw.get("availability")
@@ -103,6 +118,9 @@ def parse(text: str, origin: str) -> Domain:
         },
         scope_label=raw["scopes"]["label"].strip() if raw.get("scopes") else None,
         availability=Availability(tuple(spec["tags"]), tuple(spec["values"]), spec["unknown"]) if spec else None,
+        publishers=tuple(
+            Publisher(p["name"].strip(), tuple(p["domains"]), p["official"]) for p in raw.get("publishers") or ()
+        ),
     )
 
 
@@ -197,4 +215,36 @@ def _entries_problems(key: str, entries: object, fields: tuple[str, ...]) -> lis
         elif entry["id"] in seen:
             problems.append(f"{key}: duplicate id {entry['id']!r}")
         seen.add(entry["id"])
+    return problems
+
+
+def _publisher_problems(values: object) -> list[str]:
+    """publishers is optional; each entry is {name, domains, official} with name unique and domains hostnames."""
+    if values is None:
+        return []
+    if not isinstance(values, list) or not values:
+        return ["publishers must be a non-empty list"]
+    problems, seen = [], set()
+    for number, value in enumerate(values, start=1):
+        where = f"publishers entry {number}"
+        if not isinstance(value, dict) or set(value) != PUBLISHER_FIELDS:
+            problems.append(f"{where}: needs exactly {', '.join(sorted(PUBLISHER_FIELDS))}")
+            continue
+        name, hosts = value["name"], value["domains"]
+        if not isinstance(name, str) or not name.strip():
+            problems.append(f"{where}: name must be a non-empty string")
+        elif name.strip() in seen:
+            problems.append(f"{where}: duplicate name {name.strip()!r}")
+        else:
+            seen.add(name.strip())
+        if not isinstance(value["official"], bool):
+            problems.append(f"{where}: official must be true or false")
+        if not isinstance(hosts, list) or not hosts or not all(isinstance(h, str) for h in hosts):
+            problems.append(f"{where}: domains must be a non-empty list of host names, e.g. [example.org]")
+        else:
+            problems += [
+                f"{where}: {h!r} is not a lowercase host name such as example.org"
+                for h in hosts
+                if not DOMAIN_RE.fullmatch(h)
+            ]
     return problems

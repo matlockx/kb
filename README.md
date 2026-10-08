@@ -18,8 +18,9 @@ A knowledge base is a directory holding:
 
 | Path | Content |
 |---|---|
-| `domain.yaml` | vocabulary: name, instructions, doc types, tags, modalities, topics |
+| `domain.yaml` | vocabulary: name, instructions, doc types, publishers, tags, modalities, topics |
 | `sources.yaml` | the documents to ingest |
+| `AGENTS.md` | instructions for an agent that fills in the files (written by `setup`) |
 | `scopes.yaml` | optional: the scopes sources belong to, such as jurisdictions (see below) |
 | `prompts/extract.md` | what the model extracts from each section |
 | `eval/golden.yaml` | test questions with their expected sections |
@@ -47,11 +48,13 @@ arrow keys or `j`/`k` move, enter chooses, `esc` or `q` goes back.
   registered in `~/.omp/agent/mcp.json` as `kb -C DIR serve`, each with its
   source and statement counts and whether its MCP server is registered.
 - A knowledge base opens a menu of its commands: check, build (the `setup
-  NAME` run below), fetch, parse, extract, index, eval, register, and publish
+  NAME` run below), fetch, parse, extract, index, eval, quality, review (vet or
+  dispute a source), register, and publish
   once a catalog is connected. `kb -C DIR` without a command opens this menu
   for the knowledge base in `DIR` directly.
 - `+ new` asks for a name and creates the directory as `setup NAME` does;
-  `age key` prints your public key, creating it on first use.
+  `age key` prints your public key, creating it on first use; `name` sets the
+  name shown beside your key and on reviews.
 - `⇅ catalog` manages the shared catalog (see "Sharing knowledge bases between
   devices"). Without one it offers to connect: clone an existing GitHub
   catalog, create a new private GitHub repository with `gh` and clone it, or
@@ -60,8 +63,10 @@ arrow keys or `j`/`k` move, enter chooses, `esc` or `q` goes back.
   knowledge base with its version, size, the copy `~/kbs` holds and its title.
   An entry installs, updates or reinstalls a pulled copy, shows the details of
   `kb catalog NAME` (`info`) and, for a knowledge base on this device,
-  publishes a new version, shares it with another age key, revokes a key, or
-  turns it private or public. `+ publish` shares a local knowledge base not yet
+  publishes a new version, shares it with another age key and the name of its
+  owner, revokes a key (listed by name), or turns it private or public; the
+  menu title says whether the local copy has unpublished changes. `+ publish`
+  shares a local knowledge base not yet
   in the catalog. The menu never offers to pull over a knowledge base built on
   this device, and creates your age key before the first publish.
 
@@ -79,11 +84,14 @@ The first run asks what the knowledge base is about and whether to make it a
 git repository, then creates `~/kbs/running` (`--dir DIR` for another place)
 with template files and a `.gitignore` for `data/` and `raw/`.
 
-Fill in the four files; an agent can draft them from your sources:
+Fill in the four files; an agent can draft them from your sources, following
+the `AGENTS.md` that `setup` writes next to them:
 
 - `domain.yaml`:
   - `name` and `instructions`: what the knowledge base holds; shown to the
     agent as the MCP server instructions. Pre-filled from your answer.
+  - `publishers`: who publishes the sources and the domains their URLs may be
+    on, see "Source trust, reviews and quality".
   - `doc_types`: the kinds of document you ingest, most authoritative first
     (for running plans, for example `[position_stand, review, study, book,
     coaching_guide]`). An entry may be a mapping `{id, binding, note}`:
@@ -198,6 +206,68 @@ claude mcp add running -s user -- uv run --project ~/github/kb --quiet kb -C ~/k
 omp also imports Claude Code's user-level servers, so register each server in
 one place only: the same name in both makes one shadow the other.
 
+## Source trust, reviews and quality
+
+A knowledge base is only as good as its sources, so every source gets a trust
+level with the reason for it, and a report shows how much of what was ingested
+can be relied on.
+
+**Publishers.** `domain.yaml` lists who publishes the sources and the only
+domains their URLs may be on:
+
+```yaml
+publishers:
+  - name: W3C Technical Architecture Group   # spelled as in sources.yaml
+    domains: [w3.org]                          # w3.org and its subdomains
+    official: true                             # issues the texts itself
+```
+
+`kb sources --check` (and every command that reads `sources.yaml`) fails for a
+source whose `publisher` is not listed or whose URL is on another domain, so a
+look-alike or typo-squatted site is stopped before anything is fetched. Use the
+narrowest domain that belongs to the publisher. A domain written before this
+field existed still loads and serves, but its registry fails the check until
+its publishers are declared; the message names each offending source.
+
+**Trust levels**, from `kb review` and the `trust` and `trust_reason` fields of
+`kb_sources`:
+
+| Level | When |
+|---|---|
+| `official` | the publisher is declared `official: true`, the URL is on its domains, the doc type is binding and the source is no translation |
+| `secondary` | the URL is on a declared publisher's domains, but the publisher is not official, the doc type is not binding, or the source is a translation |
+| `unverified` | the publisher is not declared, or the URL is on none of its domains (only in a database whose registry was not checked) |
+| `disputed` | a person disputed the current version |
+
+**Reviews.** A person records a verdict on the current version of a source with
+`kb review ID --vet` (optionally `--note`) or `kb review ID --dispute --note
+WHY`; the menu of a knowledge base has the same under `review`, and `kb review
+ID` shows the source with its reviews. The reviewer is your name from `kb name`.
+A vetted verdict raises the level by one (`unverified` to `secondary`,
+`secondary` to `official`), a disputed one overrides every vetted one, and the
+latest verdict of each reviewer counts. A review belongs to one version of the
+source: when the download changes, the new version starts without verdicts and
+the old ones stay as history. Reviews live in the database (`reviews`) and
+travel in a published snapshot. A pulled copy is replaced by the published
+database, so reviews recorded only on the pulled copy are lost: review on the
+device that publishes. Reviewing is optional; without reviews the level comes
+from the publisher and the doc type alone.
+
+**Quality.** `kb quality` prints, per source, its trust level and the counts
+for its current version:
+
+- `sections` and `covered`: the sections and how many have a statement;
+- `statements` and `verified`: the statements and how many still have their
+  quote in their section, the machine check that `kb eval` also runs (quotes
+  rejected at extraction are not stored, so they are not counted);
+- `evidence`: the verified statements of a source whose trust is `official`
+  and whose doc type is binding, the ones you can cite as the text itself.
+
+Trust says where a text comes from and what people made of it; it does not
+prove that a page at an official URL is genuine, nor that its content is
+correct, and a redirect to another host is not checked. A check against the
+publisher's own site, by a person, is what `--vet` records.
+
 ## Sharing knowledge bases between devices
 
 `kb publish` turns a built knowledge base into one encrypted file, a bundle;
@@ -247,11 +317,26 @@ kb pull running --force                         # update an installed copy
 ```
 
 `publish` always adds your own public key to `recipients.txt`; add other
-people's with `--recipient` and remove them with `--revoke`, or edit the file
-(one `age1...` key per line, `#` comments) and publish again. A publish whose
+people's with `--recipient AGE1...=NAME` (the name is optional) and remove
+them with `--revoke`, or edit the file (one `age1...` key per line, a name
+after a `#`) and publish again. The names are how you tell the keys apart
+later: your own key is written as `NAME (HOST)`, with the name from `kb name`
+(asked once, saved in `~/.config/kb/name`) and the device's host name, so
+every device of yours has its own line. An own key that already has a name
+keeps it. `kb catalog NAME` lists each key with its name. A publish whose
 content, recipients and privacy match the last version prints `unchanged` and
-uploads nothing. `--private` stays in force for later publishes until
-`--no-private`.
+uploads nothing; when only names differ, it updates `recipients.txt` of that
+version and commits it without making a new version, because the bundle is
+encrypted to the same keys. The names are plain text in the catalog, visible to
+everyone who can read it, so with real names in a git catalog that is personal
+data. `--private` stays in force for later publishes until `--no-private`.
+
+Whether this device holds changes that were not published is shown in the
+menu of a catalog entry (`matches v3` or `unpublished changes`) and as `local
+state` in `kb catalog NAME`. It snapshots the database exactly as `publish`
+does and compares the checksum with the manifest, so it costs one copy of the
+database per check, and it also turns on after a `kb fetch` that found nothing
+new, because the fetch time is part of the snapshot.
 
 `pull` checks the bundle against the checksum in the manifest, decrypts it,
 writes the database and the configuration files into `~/kbs/NAME` (`--dir`
@@ -293,7 +378,8 @@ What the encryption does and does not do:
 ## How it works
 
 1. `sources.yaml` lists every document by hand: publisher, title, URL,
-   language, `doc_type` and tags. `domain.yaml` defines the allowed values.
+   language, `doc_type` and tags. `domain.yaml` defines the allowed values and
+   the publishers whose domains a source's URL must be on.
 2. `kb fetch` downloads each source and stores each distinct content as a new
    version; `kb parse` splits the current version into sections on the
    document's own numbering; `kb extract` sends each section to Claude (through
@@ -327,6 +413,10 @@ kb extract --source ID            # statements via Claude (pi -p)
 kb extract --matching '(?i)taper' # only sections whose text matches
 kb index             # full-text index and embeddings (downloads bge-m3 once)
 kb eval              # golden-set hit rate
+kb quality           # per source: trust, sections, statements, verified, evidence
+kb review            # trust level of every source, and why
+kb review ID --vet   # record your verdict on a source (--dispute --note WHY to downvote)
+kb name Martin       # your name, shown beside your key and on reviews
 kb serve             # MCP server on stdio
 ```
 

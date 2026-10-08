@@ -105,6 +105,18 @@ CREATE TABLE IF NOT EXISTS availability (
   PRIMARY KEY (scope, tag)
 );
 
+-- A person's verdict on one version of a source, kept with the database so it travels in a published snapshot.
+-- Never rebuilt from configuration: a new version of the source starts without reviews, the old ones stay as history.
+CREATE TABLE IF NOT EXISTS reviews (
+  id         TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL REFERENCES document_versions (id),
+  reviewer   TEXT NOT NULL,                          -- name or acronym, as `kb name` records it
+  verdict    TEXT NOT NULL CHECK (verdict IN ('vetted', 'disputed')),
+  note       TEXT NOT NULL,                          -- why; empty only for a vetted verdict
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reviews_version ON reviews (version_id);
+
 -- Embedding vectors for semantic search, rebuilt incrementally by `kb index`. Derived: text_sha256 marks
 -- which text a vector was made from, so changed chunks and statements are embedded again.
 CREATE TABLE IF NOT EXISTS vectors (

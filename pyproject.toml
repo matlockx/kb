@@ -37,5 +37,7 @@ select = ["E", "W", "F", "I", "N", "UP", "S", "B", "A", "C4", "DTZ", "T20", "SIM
 "src/kb/catalog.py" = ["T201"]
 "src/kb/cli.py" = ["T201"]
 "src/kb/evaluate.py" = ["T201"]
+"src/kb/quality.py" = ["T201"]
+"src/kb/review.py" = ["T201"]
 "src/kb/setup.py" = ["T201"]
 "tests/*" = ["S101"]
