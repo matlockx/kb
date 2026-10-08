@@ -388,6 +388,11 @@ timeout is 60 seconds. It fails, in this order, on:
 8. a Cloudflare challenge served with status 200,
 9. a Cloudflare or Anubis challenge script in the body.
 
+`fetch_all` then fails a source whose final URL, after redirects, is not on a
+domain of its publisher in `domain.yaml` (`trust.provenance`); nothing is
+stored for it. A file saved by hand and a download that reports no final URL
+are not checked.
+
 ### 8.2 Storing a download
 
 ```mermaid

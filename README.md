@@ -265,8 +265,11 @@ for its current version:
 
 Trust says where a text comes from and what people made of it; it does not
 prove that a page at an official URL is genuine, nor that its content is
-correct, and a redirect to another host is not checked. A check against the
-publisher's own site, by a person, is what `--vet` records.
+correct. A check against the publisher's own site, by a person, is what
+`--vet` records. `kb fetch` also fails a source whose download ends, after
+redirects, on a host outside its publisher's domains (the message names the
+host); add the host to the publisher's `domains` when it is the publisher's
+own, for example a CDN. A file saved by hand is not checked.
 
 ## Sharing knowledge bases between devices
 

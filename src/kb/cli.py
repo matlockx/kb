@@ -80,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         "A file saved by hand into DOWNLOADS/<source id>/ is stored instead of downloading the URL and is then "
         "removed from there; failed sources are listed with their links and folders for that, and "
         "DOWNLOADS/ingest.sh is written to store and ingest them once saved. "
+        "A download that ends, after redirects, on a host outside its publisher's domains in domain.yaml fails. "
         "Exits 1 if any download failed.",
     )
     cmd.add_argument("--source", action="append", metavar="ID", help="fetch only this source (repeatable)")
@@ -377,7 +378,11 @@ def main(argv: list[str] | None = None) -> int:
         stale = sources.sync(conn, found)
         statements.sync_topics(conn, defined.topics)
         scopes.sync(conn, registry)
-        results = fetch.fetch_all(conn, selected, args.raw, inbox=args.downloads) if args.command == "fetch" else None
+        results = (
+            fetch.fetch_all(conn, selected, args.raw, inbox=args.downloads, domain=defined)
+            if args.command == "fetch"
+            else None
+        )
         parsed = parse.parse_all(conn, selected, args.raw) if args.command == "parse" else None
         extracted = None
         if system is not None:
