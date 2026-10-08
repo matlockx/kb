@@ -12,6 +12,19 @@ instructions: <<INSTRUCTIONS>>
 # lists statements from earlier types first.
 doc_types: [standard, review, study, guidance, article]
 
+# Who publishes the sources, and the only domains their URLs may be on.
+# `kb sources --check` fails for a source whose publisher is not listed here
+# (spelled identically) or whose URL is on another domain, so a look-alike site
+# cannot slip in. official: true only for a body that issues the texts itself (a
+# legislature, regulator, standards body); a commentary, trade article or vendor
+# guide is official: false and counts as a secondary source until a person vets
+# it with `kb review`. List the narrowest domain that is theirs. Replace the
+# placeholder below.
+publishers:
+  - name: Example Society
+    domains: [example.org]
+    official: false
+
 # Facet values. Each source lists the tags it covers; each statement lists the
 # subset it applies to; kb_search and kb_topic filter on them. Replace with the
 # facet that matters in this domain (audience, level, distance, ...).

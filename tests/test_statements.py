@@ -57,6 +57,7 @@ def domain_yaml(domain: Domain) -> str:
             "tags": list(domain.tags),
             "modalities": [dataclasses.asdict(m) for m in domain.modalities],
             "topics": [dataclasses.asdict(t) for t in domain.topics],
+            "publishers": [{"name": "FSAI", "domains": ["example.org"], "official": True}],
         }
     )
 

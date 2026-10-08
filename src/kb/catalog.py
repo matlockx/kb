@@ -97,12 +97,20 @@ def connect(repo: str, target: Path, create: bool = False, saved: Path = SAVED) 
 
 
 def publish(
-    home: Path, catalog: Path, name: str, add: list[str], private: bool | None, remove: tuple[str, ...] = ()
+    home: Path,
+    catalog: Path,
+    name: str,
+    add: list[str],
+    private: bool | None,
+    remove: tuple[str, ...] = (),
+    label: str = "",
 ) -> int:
     """Publish the knowledge base in home as the next version of catalog/name; commit and push in a git clone.
 
-    add lists public keys to append to its recipients and remove keys to drop from them; the publisher's own keys
-    are always recipients. private None keeps the previous setting (public at first).
+    add lists public keys, each KEY or KEY=LABEL, to append to its recipients and remove keys to drop from them; the
+    publisher's own keys are always recipients, and label names them in recipients.txt where they have no label yet.
+    private None keeps the previous setting (public at first). When only labels differ from the last version, the
+    recipients.txt of that version is updated and no new version is made.
     """
     if not ID_RE.fullmatch(name):
         print(f"name {name!r} must be lowercase letters, digits and single hyphens; pass --name", file=sys.stderr)
@@ -121,15 +129,22 @@ def publish(
     try:
         old = _manifest(entry)
         own = keys.public_keys(keys.load(keys.identity_path()))
-        listed, recipients = _recipients(entry, [*own, *add], tuple(k for k in remove if k not in own))
+        listed, recipients = _recipients(
+            entry, own, label, [keys.split_recipient(a) for a in add], tuple(k for k in remove if k not in own)
+        )
         files = bundle.config_files(home)
         private = bool(old and old.get("private")) if private is None else private
         snapshot = work / "kb.db"
         content = bundle.snapshot(home / DB, files, snapshot)
         unchanged = (content, recipients, private)
         if old and (old.get("content_sha256"), old.get("recipients"), old.get("private")) == unchanged:
-            print(f"{name} v{old['version']} is unchanged; nothing to publish")
-            return 0
+            path = entry / RECIPIENTS
+            if listed == (path.read_text(encoding="utf-8") if path.exists() else None):
+                print(f"{name} v{old['version']} is unchanged; nothing to publish")
+                return 0
+            path.write_text(listed, encoding="utf-8")
+            print(f"updated the recipient names of {name} v{old['version']}; no new version needed")
+            return _commit(catalog, name, f"Update recipient names of {name}")
         version = old["version"] + 1 if old else 1
         published_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         bundle.stamp(
@@ -172,17 +187,7 @@ def publish(
         f"published {name} v{version} to {where} ({manifest['bundle']['size'] / 1e6:.1f} MB, encrypted to "
         f"{len(recipients)} recipient{'s' if len(recipients) != 1 else ''})"
     )
-    if not _is_git(catalog):
-        return 0
-    _git(catalog, "add", "-A", "--", name)
-    committed = _git(catalog, "commit", "--quiet", "-m", f"Publish {name} v{version}", "--", name)
-    if not (committed and _git(catalog, "push", "--quiet")):
-        print(
-            f"git commit or push failed in {catalog}; the bundle is uploaded, push the catalog by hand", file=sys.stderr
-        )
-        return 1
-    print(f"committed and pushed {name}")
-    return 0
+    return _commit(catalog, name, f"Publish {name} v{version}")
 
 
 def show(catalog: Path, root: Path | None = None) -> int:
@@ -218,10 +223,13 @@ def info(catalog: Path, name: str, root: Path | None = None) -> int:
     if manifest is None:
         print(f"{name!r} is not in the catalog {catalog}; `kb catalog` lists it", file=sys.stderr)
         return 1
-    entry = Entry(name, manifest, None, local_version(name, (root or setup.KB_ROOT) / name / DB))
+    home = (root or setup.KB_ROOT) / name
+    entry = Entry(name, manifest, None, local_version(name, home / DB))
     packed, counted = manifest["bundle"], manifest.get("counts") or {}
     release = manifest.get("release")
     listed = manifest.get("recipients") or []
+    labels = labelled(catalog, name)
+    state = sync_state(home, manifest, entry.local)
     rows = {
         "title": manifest.get("title") or "(private)",
         "version": f"v{manifest['version']}, published {manifest.get('published_at', 'at an unknown time')}",
@@ -230,13 +238,14 @@ def info(catalog: Path, name: str, root: Path | None = None) -> int:
         "bundle": f"{packed['file']}, {packed['size'] / 1e6:.1f} MB, sha256 {packed['sha256']}",
         "stored in": f"GitHub release {release['tag']} of {release['repo']}" if release else str(catalog / name),
         "local copy": (entry.local + (" (older)" if outdated(entry) else "")) or "not installed",
+        **({"local state": state} if state else {}),
         "recipients": f"{len(listed)} key{'s' if len(listed) != 1 else ''} the bundle is encrypted to",
     }
     print(name)
     for label, value in rows.items():
         print(f"  {label:<11} {value}")
     for key in listed:
-        print(f"  {'':<11} {key}")
+        print(f"  {'':<11} {key}  {labels.get(key, '')}".rstrip())
     return 0
 
 
@@ -259,10 +268,33 @@ def outdated(entry: Entry) -> bool:
     return entry.manifest is not None and entry.local.startswith("v") and entry.local != f"v{entry.manifest['version']}"
 
 
+def labelled(catalog: Path, name: str) -> dict[str, str]:
+    """The public keys catalog/name is encrypted to with the label recipients.txt gives each ('' without one)."""
+    path = catalog / name / RECIPIENTS
+    return keys.parse_labelled(path.read_text(encoding="utf-8"), str(path)) if path.exists() else {}
+
+
 def recipients(catalog: Path, name: str) -> list[str]:
     """The public keys catalog/name is encrypted to, as its recipients.txt lists them."""
-    path = catalog / name / RECIPIENTS
-    return keys.parse_recipients(path.read_text(encoding="utf-8"), str(path)) if path.exists() else []
+    return list(labelled(catalog, name))
+
+
+def sync_state(home: Path, manifest: dict, local: str) -> str:
+    """'unpublished changes' or 'matches vN' for the knowledge base in home against the published manifest.
+
+    Snapshots the database exactly as publish does and compares checksums, so it costs one database copy. Returns ''
+    when local (see local_version) is neither 'built here' nor the published version, or the database is unreadable.
+    """
+    if local not in {"built here", f"v{manifest['version']}"}:
+        return ""
+    work = Path(tempfile.mkdtemp(prefix="kb-state-"))
+    try:
+        content = bundle.snapshot(home / DB, bundle.config_files(home), work / "kb.db")
+    except (sqlite3.Error, bundle.BundleError, OSError):
+        return ""
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return f"matches v{manifest['version']}" if content == manifest.get("content_sha256") else "unpublished changes"
 
 
 def names(catalog: Path) -> list[str]:
@@ -370,18 +402,51 @@ def _manifest(entry: Path) -> dict | None:
     return manifest
 
 
-def _recipients(entry: Path, wanted: list[str], dropped: tuple[str, ...] = ()) -> tuple[str, list[str]]:
-    """(text of recipients.txt without the dropped keys and with wanted keys appended, the keys it lists)."""
+def _recipients(
+    entry: Path, own: list[str], own_label: str, added: list[tuple[str, str]], dropped: tuple[str, ...] = ()
+) -> tuple[str, list[str]]:
+    """(text of recipients.txt without the dropped keys, with the own and added keys listed, the keys it lists).
+
+    own_label names an own key that has no label yet; the label of an added (key, label) pair replaces one.
+    """
     path = entry / RECIPIENTS
     text = path.read_text(encoding="utf-8") if path.exists() else RECIPIENTS_HEADER
     if dropped:
         text = "".join(line for line in text.splitlines(keepends=True) if line.split("#", 1)[0].strip() not in dropped)
-    listed = keys.parse_recipients(text, str(path))
-    for key in keys.parse_recipients("\n".join(wanted), "--recipient"):
-        if key not in listed:
-            text += ("" if text.endswith("\n") else "\n") + f"{key}\n"
-            listed.append(key)
-    return text, listed
+    keys.parse_recipients(text, str(path))  # a bad line in the existing file is reported before anything changes
+    keys.parse_recipients("\n".join(key for key, _ in added), "--recipient")
+    for key in own:
+        text = _put(text, key, own_label, replace=False)
+    for key, label in added:
+        text = _put(text, key, label, replace=True)
+    return text, keys.parse_recipients(text, str(path))
+
+
+def _put(text: str, key: str, label: str, replace: bool) -> str:
+    """text with key listed: appended when absent, labelled when label is set and it has none (or replace)."""
+    lines = text.splitlines(keepends=True)
+    for n, line in enumerate(lines):
+        if line.split("#", 1)[0].strip() == key:
+            if label and (replace or "#" not in line):
+                lines[n] = f"{key}  # {label}\n"
+            return "".join(lines)
+    return text + ("" if text.endswith("\n") or not text else "\n") + (f"{key}  # {label}\n" if label else f"{key}\n")
+
+
+def _commit(catalog: Path, name: str, message: str) -> int:
+    """Commit and push catalog/name when the catalog is a git clone; 1 when git fails."""
+    if not _is_git(catalog):
+        return 0
+    _git(catalog, "add", "-A", "--", name)
+    committed = _git(catalog, "commit", "--quiet", "-m", message, "--", name)
+    if not (committed and _git(catalog, "push", "--quiet")):
+        print(
+            f"git commit or push failed in {catalog}; push the catalog by hand (a bundle already uploaded stays)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"committed and pushed {name}")
+    return 0
 
 
 def _upload(catalog: Path, name: str, version: int, packed: Path) -> dict[str, str]:

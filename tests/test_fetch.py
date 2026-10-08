@@ -188,6 +188,7 @@ def test_cli_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
                 "tags": ["food"],
                 "modalities": [{"id": "must", "description": "required"}],
                 "topics": [{"id": "registration", "label": "Registration", "description": "registrations"}],
+                "publishers": [{"name": "Parliament", "domains": ["example.org"], "official": True}],
             }
         ),
         encoding="utf-8",

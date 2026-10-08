@@ -3,7 +3,7 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_PATH = Path("data/kb.db")
-SCHEMA_VERSION = 2  # recorded in a published snapshot's kb_meta; pull refuses a newer one
+SCHEMA_VERSION = 3  # recorded in a published snapshot's kb_meta; pull refuses a newer one
 # Columns added after schema 1, with their declarations; connect adds the missing ones to an older database.
 ADDED_COLUMNS = {
     "documents": ("scope TEXT", "translation_of TEXT"),
@@ -26,10 +26,12 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def upgrade(path: Path) -> None:
-    """Add the columns of a newer schema to the database at path; it is opened writable only when one is missing."""
+    """Add the columns and tables of a newer schema to the database at path; it is opened writable only when
+    something is missing."""
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        current = all(
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        current = "reviews" in tables and all(
             column.split()[0] in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             for table, columns in ADDED_COLUMNS.items()
             for column in columns

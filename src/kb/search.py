@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 
+from kb import trust
 from kb.domain import Domain
 from kb.index import CURRENT_VERSIONS, EMBED_MODEL, Embed, from_blob
 
@@ -465,6 +466,7 @@ def sources(conn: sqlite3.Connection, domain: Domain, scope: str | None = None) 
             WHERE ? IS NULL OR d.scope = ? ORDER BY d.id""",  # noqa: S608 - constant subquery
         (only, only),
     ).fetchall()
+    judged = trust.assess(conn, domain)
     listed = []
     for d in docs:
         item: dict[str, object] = {"source_id": d[0], "title": d[1], "publisher": d[2]}
@@ -480,6 +482,8 @@ def sources(conn: sqlite3.Connection, domain: Domain, scope: str | None = None) 
             "last_checked_at": d[11],
             "sections": d[12],
             "statements": d[13],
+            "trust": judged[d[0]].level,
+            "trust_reason": judged[d[0]].reason,
         }
         listed.append(item)
     out: dict[str, object] = {"sources": listed}

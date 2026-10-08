@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -398,3 +399,87 @@ def test_keygen_never_replaces_an_identity(capsys, identity: str) -> None:
     assert capsys.readouterr().out.splitlines()[-1] == identity
     assert keys.identity_path().read_text() == before
     assert keys.identity_path().stat().st_mode & 0o077 == 0
+
+
+def test_recipients_carry_names_and_a_names_only_change_makes_no_version(
+    tmp_path: Path, shelf: Path, identity: str, capsys
+) -> None:
+    source = built(tmp_path / "running")
+    colleague = keys.generate(tmp_path / "keys" / "colleague.txt")
+    assert catalog.publish(source, shelf, "running", [f"{colleague}=Ana"], None, label="Martin (macbook)") == 0
+    assert catalog.labelled(shelf, "running") == {identity: "Martin (macbook)", colleague: "Ana"}
+    assert catalog.recipients(shelf, "running") == [identity, colleague]
+    capsys.readouterr()
+
+    # an own key is named only where it has no name yet, so a name edited by hand survives another device's label
+    assert catalog.publish(source, shelf, "running", [], None, label="Martin (desk)") == 0
+    assert "unchanged" in capsys.readouterr().out
+    assert catalog.labelled(shelf, "running")[identity] == "Martin (macbook)"
+
+    assert catalog.publish(source, shelf, "running", [f"{colleague}=Ana Smith"], None) == 0  # the name is replaced
+    assert "updated the recipient names of running v1" in capsys.readouterr().out
+    assert catalog.labelled(shelf, "running")[colleague] == "Ana Smith"
+    assert manifest(shelf)["version"] == 1  # the bundle is encrypted to the same keys
+    assert pull(shelf, tmp_path / "device" / "running") == 0
+
+
+def test_a_label_is_added_to_keys_published_without_one(tmp_path: Path, shelf: Path, identity: str) -> None:
+    source = built(tmp_path / "running")
+    assert publish(source, shelf) == 0
+    assert catalog.labelled(shelf, "running") == {identity: ""}
+    assert catalog.publish(source, shelf, "running", [], None, label="Martin (macbook)") == 0
+    assert catalog.labelled(shelf, "running") == {identity: "Martin (macbook)"}
+    assert manifest(shelf)["version"] == 1
+
+
+@pytest.mark.usefixtures("identity")
+def test_sync_state_compares_the_local_database_with_the_published_content(tmp_path: Path, shelf: Path) -> None:
+    source = built(tmp_path / "running")
+    assert publish(source, shelf) == 0
+    published = manifest(shelf)
+    assert catalog.sync_state(source, published, "built here") == "matches v1"
+    assert catalog.sync_state(source, published, "v1") == "matches v1"
+
+    built(source, "v2")
+    assert catalog.sync_state(source, published, "built here") == "unpublished changes"
+    assert catalog.sync_state(source, published, "v1") == "unpublished changes"
+    assert catalog.sync_state(source, published, "v0") == ""  # an older pulled copy is not comparable
+    assert catalog.sync_state(source, published, "") == ""
+    (source / db.DEFAULT_PATH).write_bytes(b"not a database")
+    assert catalog.sync_state(source, published, "built here") == ""
+    assert not list(Path(tempfile.gettempdir()).glob("kb-state-*"))  # the plaintext snapshot is removed
+
+
+def test_info_shows_names_and_whether_the_local_copy_is_published(
+    tmp_path: Path, shelf: Path, identity: str, capsys
+) -> None:
+    root = tmp_path / "kbs"
+    source = built(root / "running")
+    assert catalog.publish(source, shelf, "running", [], None, label="Martin (macbook)") == 0
+    capsys.readouterr()
+    assert catalog.info(shelf, "running", root) == 0
+    out = capsys.readouterr().out
+    assert "local copy  built here\n  local state matches v1\n" in out
+    assert f"{identity}  Martin (macbook)\n" in out
+
+    built(source, "v2")
+    assert catalog.info(shelf, "running", root) == 0
+    assert "local state unpublished changes" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("git_env", "releases")
+def test_a_failed_push_is_reported_for_a_publish_and_for_a_names_only_update(
+    tmp_path: Path, identity: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    laptop = tmp_path / "laptop"
+    git("init", "-q", str(laptop))  # no remote: the commit works, the push cannot
+    source = built(tmp_path / "running")
+    assert catalog.publish(source, laptop, "running", [], None) == 1
+    assert "git commit or push failed" in capsys.readouterr().err
+    assert manifest(laptop)["version"] == 1  # the version exists locally, only the push is left to do
+
+    assert catalog.publish(source, laptop, "running", [], None, label="Martin (macbook)") == 1
+    out = capsys.readouterr()
+    assert "updated the recipient names of running v1" in out.out
+    assert "push the catalog by hand (a bundle already uploaded stays)" in out.err
+    assert catalog.labelled(laptop, "running")[identity] == "Martin (macbook)"

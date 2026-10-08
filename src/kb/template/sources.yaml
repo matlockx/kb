@@ -1,7 +1,8 @@
 # Hand-curated source registry. Add at least one source, then run
 # `setup <name>` again to build the knowledge base.
 #
-# Fields: id (lowercase slug), publisher, title, url (https, HTML or PDF),
+# Fields: id (lowercase slug), publisher (a name listed under publishers in
+# domain.yaml), title, url (https, HTML or PDF, on that publisher's domains),
 # language (ISO 639-1), doc_type (one of domain.yaml doc_types), tags
 # (non-empty subset of domain.yaml tags). Optional: scope (an id in
 # scopes.yaml, required when domain.yaml has scopes), translation_of (id of the

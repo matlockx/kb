@@ -132,6 +132,7 @@ def write_domain(tmp_path: Path) -> Path:
                 "tags": list(DOMAIN.tags),
                 "modalities": [{"id": m.id, "description": m.description} for m in DOMAIN.modalities],
                 "topics": [{"id": t.id, "label": t.label, "description": t.description} for t in DOMAIN.topics],
+                "publishers": [{"name": "Riksdag", "domains": ["example.org"], "official": True}],
             }
         ),
         encoding="utf-8",

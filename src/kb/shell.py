@@ -19,7 +19,9 @@ from typing import TextIO
 
 from kb import catalog, setup
 from kb import keys as age
+from kb import review as reviews
 from kb.db import DEFAULT_PATH as DB
+from kb.domain import ConfigError
 
 # 256-colour palette of the bubbletea list example (lipgloss colours 62, 212, 241)
 TITLE = "\x1b[1;38;5;230;48;5;62m"
@@ -209,6 +211,7 @@ class Shell:
             Item("⇅ catalog", str(self.shelf) if self.shelf else "connect a GitHub catalog to share", self.browse)
         )
         items.append(self.leaf("age key", "show your public key, created on first use", lambda: self.cli(["keygen"])))
+        items.append(self.leaf("name", "set the name shown beside your key and on reviews", self.rename))
         return items
 
     def manage(self, name: str, home: Path) -> None:
@@ -233,12 +236,56 @@ class Shell:
             Item("extract", "extract statements with Claude", step("extract")),
             Item("index", "rebuild the full-text index and embeddings", step("index")),
             Item("eval", "golden-set hit rate", step("eval")),
+            Item("quality", "ingested, verified and evidence counts, trust per source", step("quality")),
             Item("register", f"add the MCP server to {self.config}", lambda: self.register(name, home)),
         ]
         if self.shelf is not None:
             shelf = self.shelf
-            items.append(Item("publish", f"to {shelf}", lambda: catalog.publish(home, shelf, name, [], None)))
-        return [self.leaf(item.label, item.detail, item.action, f"{name} > {item.label}") for item in items]
+            items.append(Item("publish", f"to {shelf}", self.publisher(shelf, name, home)))
+        leaves = [self.leaf(item.label, item.detail, item.action, f"{name} > {item.label}") for item in items]
+        at = [item.label for item in items].index("quality") + 1
+        leaves.insert(
+            at, Item("review", "vet or dispute a source, raising or lowering its trust", lambda: self.review(home))
+        )
+        return leaves
+
+    def rename(self) -> int:
+        answer = self.prompt("your name or acronym", age.person())
+        return self.cli(["name", answer]) if answer else 0
+
+    def review(self, home: Path) -> None:
+        """The sources of a knowledge base with their trust; choosing one opens its vet, dispute and history menu."""
+        cursor: int | None = 0
+        while True:
+            try:
+                found = reviews.overview(home)
+            except (ConfigError, sqlite3.Error) as exc:
+                self.out.write(f"{RED}{exc}{RESET}\n")
+                return
+            if not found:
+                self.out.write(f"{DIM}no sources in the database yet; run fetch first{RESET}\n")
+                return
+            items = [Item(sid, f"{t.level} · {t.reason}", partial(self.review_source, home, sid)) for sid, t in found]
+            cursor = choose(f"review sources of {home.name}", items, self.keys, self.out, start=cursor)
+            if cursor is None:
+                return
+            items[cursor].action()
+
+    def review_source(self, home: Path, source_id: str) -> None:
+        def verdict(flag: str) -> int:
+            note = self.prompt("why" + (" (required)" if flag == "--dispute" else " (optional)"))
+            if flag == "--dispute" and not note:
+                return 0
+            return self.cli(["-C", str(home), "review", source_id, flag, *(["--note", note] if note else [])])
+
+        items = [
+            self.leaf("vet", "vouch for this version: raises its trust", lambda: verdict("--vet"), f"vet {source_id}"),
+            self.leaf("dispute", "mark it untrustworthy", lambda: verdict("--dispute"), f"dispute {source_id}"),
+            self.leaf("history", "its trust and reviews", lambda: self.cli(["-C", str(home), "review", source_id])),
+        ]
+        picked = choose(f"review {source_id}", items, self.keys, self.out)
+        if picked is not None:
+            items[picked].action()
 
     def build(self, name: str, home: Path) -> int:
         return setup.setup(name, home, self.ask, self.cli, self.config)
@@ -308,6 +355,10 @@ class Shell:
             items = self.entry_items(shelf, entry, home)
             title = f"{entry.name} v{entry.manifest['version']} · {len(catalog.recipients(shelf, entry.name))} keys"
             title += " · private" if entry.manifest.get("private") else " · public"
+            if home is not None:  # DEV-NOTE: one database copy per redraw of this menu, see catalog.sync_state
+                local = catalog.local_version(entry.name, home / DB)
+                state = catalog.sync_state(home, entry.manifest, local)
+                title += f" · {state}" if state else ""
             cursor = choose(title, items, self.keys, self.out, start=cursor)
             if cursor is None:
                 return
@@ -352,25 +403,36 @@ class Shell:
         def publish() -> int:
             if not age.identity_path().exists():  # every bundle is encrypted to its publisher, so make the key first
                 self.cli(["keygen"])
-            return catalog.publish(home, shelf, name, [add] if add else [], private, (remove,) if remove else ())
+            return catalog.publish(
+                home, shelf, name, [add] if add else [], private, (remove,) if remove else (), age.own_label(self.ask)
+            )
 
         return publish
 
     def share(self, shelf: Path, name: str, home: Path) -> int:
         key = self.prompt("age public key to add (age1...)")
-        return self.publisher(shelf, name, home, add=key)() if key else 0
+        if not key:
+            return 0
+        owner = self.prompt("name of its owner, shown beside the key")
+        return self.publisher(shelf, name, home, add=f"{key}={owner}" if owner else key)()
 
     def revoke(self, shelf: Path, name: str, home: Path) -> None:
         try:
             own = age.public_keys(age.load(age.identity_path()))
         except age.KeysError:
             own = []
-        others = [k for k in catalog.recipients(shelf, name) if k not in own]
+        labels = catalog.labelled(shelf, name)
+        others = [k for k in labels if k not in own]
         if not others:
             self.out.write(f"{DIM}{name} is encrypted to your own keys only{RESET}\n")
             return
         items = [
-            self.leaf(k, "remove and publish", self.publisher(shelf, name, home, remove=k), f"revoke {k[:16]}…")
+            self.leaf(
+                labels[k] or f"{k[:16]}…",
+                f"{k[:16]}… remove and publish" if labels[k] else "remove and publish",
+                self.publisher(shelf, name, home, remove=k),
+                f"revoke {labels[k] or k[:16] + '…'}",
+            )
             for k in others
         ]
         picked = choose(f"revoke a key of {name}", items, self.keys, self.out)

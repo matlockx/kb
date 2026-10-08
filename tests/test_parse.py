@@ -385,6 +385,7 @@ def write_domain(tmp_path: Path) -> Path:
                 "tags": ["food"],
                 "modalities": [{"id": "must", "description": "required"}],
                 "topics": [{"id": "registration", "label": "Registration", "description": "registrations"}],
+                "publishers": [{"name": "x", "domains": ["example.org"], "official": True}],
             }
         ),
         encoding="utf-8",

@@ -5,6 +5,7 @@ import re
 import shlex
 import statistics
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from kb import (
@@ -18,11 +19,14 @@ from kb import (
     index,
     keys,
     parse,
+    quality,
+    review,
     scopes,
     setup,
     shell,
     sources,
     statements,
+    trust,
 )
 
 DOWNLOADS = Path("downloads")
@@ -161,6 +165,36 @@ def main(argv: list[str] | None = None) -> int:
         "An existing identity is never replaced; its public key is printed instead.",
     )
     cmd = commands.add_parser(
+        "name",
+        help="show or set your name, used beside your key in recipients.txt and on reviews",
+        description=f"Without NAME, print the name saved in {keys.NAME_FILE}. With NAME, save it. Published "
+        "recipients.txt files show it with the device name, e.g. 'Martin (macbook)', so the keys of a knowledge "
+        "base can be told apart; kb review records it as the reviewer. Asked once on the first publish or review.",
+    )
+    cmd.add_argument("name", nargs="?", help="your name or acronym")
+    commands.add_parser(
+        "quality",
+        help="report what is ingested, machine-checked and usable as evidence, per source",
+        description="Per source: its trust level, the sections of the current version and how many have statements, "
+        "the statements, how many still have their quote in their section, and how many are evidence (verified "
+        "statements of a binding source whose trust is official). Reads the database only.",
+    )
+    cmd = commands.add_parser(
+        "review",
+        help="list the trust of the sources, show one, or record a human verdict on it",
+        description="Without SOURCE, list every source with its trust level and the reason. With SOURCE, show it "
+        "with its reviews. With SOURCE and --vet or --dispute, record your verdict (your name from kb name) on the "
+        "current version of the source: vetted raises its trust one level, disputed overrides it, and a new "
+        f"version of the source starts without verdicts. Trust levels: {', '.join(reversed(trust.LEVELS))}.",
+    )
+    cmd.add_argument("source", nargs="?", help="source id")
+    verdict = cmd.add_mutually_exclusive_group()
+    verdict.add_argument("--vet", action="store_const", const="vetted", dest="verdict", help="vouch for the source")
+    verdict.add_argument(
+        "--dispute", action="store_const", const="disputed", dest="verdict", help="mark the source untrustworthy"
+    )
+    cmd.add_argument("--note", default="", help="why; required with --dispute")
+    cmd = commands.add_parser(
         "unpack",
         help="write the configuration files stored in a published database",
         description="Write domain.yaml, sources.yaml, prompts/ and eval/ as stored in the database by kb publish. "
@@ -215,7 +249,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     cmd.add_argument("--name", help="name in the catalog (default: the directory name)")
     cmd.add_argument(
-        "--recipient", action="append", default=[], metavar="AGE1...", help="add a public key (repeatable)"
+        "--recipient",
+        action="append",
+        default=[],
+        metavar="AGE1...[=NAME]",
+        help="add a public key, optionally with the name of its owner (repeatable)",
     )
     cmd.add_argument(
         "--revoke", action="append", default=[], metavar="AGE1...", help="remove a public key (repeatable)"
@@ -271,8 +309,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_keygen()
     if args.command == "publish":
         return catalog.publish(
-            Path.cwd(), args.catalog, args.name or Path.cwd().name, args.recipient, args.private, tuple(args.revoke)
+            Path.cwd(),
+            args.catalog,
+            args.name or Path.cwd().name,
+            args.recipient,
+            args.private,
+            tuple(args.revoke),
+            keys.own_label(_prompt()),
         )
+    if args.command == "name":
+        return run_name(args.name)
     if args.command == "catalog":
         return catalog.info(args.catalog, args.name) if args.name else catalog.show(args.catalog)
     if args.command == "pull":
@@ -281,12 +327,17 @@ def main(argv: list[str] | None = None) -> int:
         return run_unpack(args.db, args.force)
     if args.command == "index":
         return run_index(args.db)
-    if args.command == "eval":
+    if args.command in {"eval", "quality", "review"}:
         try:
             evaluated = serving_domain(args.domain, args.db)
         except domain.ConfigError as exc:
             print(exc, file=sys.stderr)
             return 1
+        if args.command == "quality":
+            return quality.run(args.db, evaluated)
+        if args.command == "review":
+            reviewer = keys.person(_prompt()) if args.verdict else ""
+            return review.run(args.db, evaluated, args.source, args.verdict, args.note, reviewer)
         return evaluate.run(args.db, evaluated, args.file, args.k, args.min)
 
     try:
@@ -297,6 +348,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         defined = domain.load(args.domain)
         found = sources.load(args.file, defined)
+        # DEV-NOTE: checked here, not in sources.load, so every command that reads the registry refuses a source off
+        # its publisher's domains, while eval, quality, review and serve still open a database from before publishers.
+        trust.check_publishers(defined, found)
         registry = scopes.load(scopes.PATH, defined, found) if defined.scope_label else []
         system = statements.system_prompt(args.prompt, defined) if args.command == "extract" else None
     except domain.ConfigError as exc:
@@ -586,3 +640,18 @@ def serving_domain(path: Path, db_path: Path) -> domain.Domain:
     if text is None:
         return domain.load(path)  # raises the missing-file error
     return domain.parse(text, f"{db_path}:domain.yaml")
+
+
+def _prompt() -> Callable[[str], str] | None:
+    """input on a terminal, None otherwise, so a script never waits for an answer."""
+    return input if sys.stdin.isatty() else None
+
+
+def run_name(name: str | None) -> int:
+    if name:
+        keys.save_name(name)
+        print(f"saved {keys.clean(name)} to {keys.NAME_FILE}")
+        return 0
+    saved = keys.NAME_FILE.read_text(encoding="utf-8").strip() if keys.NAME_FILE.exists() else ""
+    print(saved or f"no name saved; set one with `kb name NAME` (until then {keys.person()} is used)")
+    return 0
