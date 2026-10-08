@@ -18,6 +18,7 @@ import yaml
 
 from kb import db, fetch, sources
 from kb.cli import ingest_script, main
+from kb.domain import Domain, Publisher
 from kb.sources import Source
 
 SOURCE = Source(
@@ -65,7 +66,7 @@ def test_download_reads_body_and_headers() -> None:
         b"%PDF", Content_Type="application/PDF; charset=binary", ETag='"v1"', Last_Modified="x", Content_Length="4"
     )
     got = fetch.download(SOURCE.url, opener=opener_returning(response))
-    assert got == fetch.Download(b"%PDF", "application/pdf", '"v1"', "x")
+    assert got == fetch.Download(b"%PDF", "application/pdf", '"v1"', "x", SOURCE.url)
 
 
 CHALLENGED = FakeResponse(b"", cf_mitigated="challenge").headers
@@ -485,3 +486,43 @@ def test_fetch_all_follows_pointers_and_sessions_by_default(
     assert [r.status for r in results] == ["new", "unchanged"]
     assert seen[:2] == [manifest, item]
     assert seen[3].endswith("&dataVigenza=20260924")  # the clock's date; seen[2] opens the session
+
+
+def test_download_reports_the_url_it_ended_on() -> None:
+    moved = FakeResponse(b"x", url="https://cdn.example.net/a", Content_Type="application/pdf")
+    assert fetch.download(SOURCE.url, opener=opener_returning(moved)).final_url == "https://cdn.example.net/a"
+
+
+REGISTERED = Domain(
+    name="T",
+    instructions="i",
+    doc_types=("act",),
+    tags=("food",),
+    modalities=(),
+    topics=(),
+    publishers=(Publisher("Parliament", ("example.org",), True),),
+)
+
+
+@pytest.mark.parametrize(
+    ("final", "domain", "status"),
+    [
+        ("https://example.org/act", REGISTERED, "new"),
+        ("https://www.example.org/moved", REGISTERED, "new"),  # a subdomain of the publisher
+        ("", REGISTERED, "new"),  # a download that reports no final URL has nothing to check
+        ("https://evil.example.net/act", None, "new"),  # without a domain nothing is checked
+        ("https://evil.example.net/act", REGISTERED, "failed"),
+        ("https://example.org.evil.net/act", REGISTERED, "failed"),  # a look-alike host
+    ],
+)
+def test_a_redirect_off_the_publishers_domains_fails_that_source(
+    conn: sqlite3.Connection, tmp_path: Path, final: str, domain: Domain | None, status: str
+) -> None:
+    def get(_url: str) -> fetch.Download:
+        return fetch.Download(b"v1", "application/pdf", None, None, final)
+
+    [result] = fetch.fetch_all(conn, [SOURCE], tmp_path / "raw", get=get, domain=domain)
+    assert result.status == status
+    if status == "failed":
+        assert result.detail.startswith("redirected off the publisher's domains: host '")
+        assert versions(conn) == []  # nothing stored for it

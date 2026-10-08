@@ -19,9 +19,11 @@ from urllib.parse import urlparse
 
 import truststore
 
+from kb.domain import Domain
 from kb.extract import HTML_TYPES
 from kb.parse import sections_of
 from kb.sources import Source
+from kb.trust import provenance
 
 # Some bot filters (cdc.gov, mayoclinic.org, mdpi.com) answer 403 to a request without Accept-Language,
 # whatever its User-Agent; "*" leaves the server's language choice as it was without the header.
@@ -66,6 +68,7 @@ class Download:
     content_type: str | None
     etag: str | None
     last_modified: str | None
+    final_url: str = ""  # the URL the body came from after redirects, as the server reported it; '' when unknown
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,7 @@ def download(url: str, opener: Opener = urllib.request.urlopen, max_bytes: int =
         content_type=content_type.split(";")[0].strip().lower() if content_type else None,
         etag=headers.get("ETag"),
         last_modified=headers.get("Last-Modified"),
+        final_url=final,
     )
 
 
@@ -228,11 +232,13 @@ def fetch_all(
     get: Callable[[str], Download] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     inbox: Path | None = None,
+    domain: Domain | None = None,
 ) -> list[Result]:
     """Fetch every source; a failure is reported and leaves that source's versions untouched.
 
     A file saved by hand into inbox/<source id>/ is stored instead of downloading the URL, and removed from the
-    inbox once it is stored (kept when it fails). A pointer URL (see resolve) is followed first.
+    inbox once it is stored (kept when it fails). A pointer URL (see resolve) is followed first. With a domain,
+    a download whose final URL, after redirects, is not on a domain of the source's publisher fails.
     """
     if get is None:  # get_source looks download up per call, so a patched module-level download is honoured
 
@@ -245,6 +251,12 @@ def fetch_all(
             saved = saved_by_hand(inbox / source.id) if inbox is not None else None
             if saved is None:
                 got = get(resolve(source.url, get))
+                if (
+                    domain is not None
+                    and got.final_url
+                    and (why := provenance(domain, source.publisher, got.final_url)[1])
+                ):
+                    raise FetchError(f"redirected off the publisher's domains: {why}")
             else:
                 got = Download(_read_saved(saved), SAVED_TYPES[saved.suffix.lower()], None, None)
         except FetchError as exc:
