@@ -4,10 +4,10 @@ Usage: uv run python scripts/judge_statements.py [--db data/kb.db] [--per-source
        > judge.jsonl
 
 Samples statements per source (deterministic: lowest sha256 of the statement id), sends each sample with
-the surrounding section text to the model through the same `pi -p` call the extractor uses, and asks for a
-verdict per statement: modality, summary faithfulness, topics and applies_to. Writes one JSON line per source
-with the verdicts. The model is a reviewer, not the source of truth: every flagged record still needs a human
-look at the section.
+the surrounding section text to the model through the same agent CLI call (`KB_PI_COMMAND`) the extractor
+uses, and asks for a verdict per statement: modality, summary faithfulness, topics and applies_to. Writes one
+JSON line per source with the verdicts. The model is a reviewer, not the source of truth: every flagged record
+still needs a human look at the section.
 """
 
 import argparse

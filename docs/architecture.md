@@ -20,7 +20,7 @@ flowchart LR
     WEB[("Publishers<br/>https only")]
     DL["downloads/ID/<br/>saved by hand"]
     RAW["raw/ID/SHA.ext"]
-    PI["pi -p<br/>Claude"]
+    PI["omp -p or pi -p<br/>Claude"]
     EMB["BAAI/bge-m3<br/>local embeddings"]
     subgraph db["data/kb.db (SQLite)"]
         T1["documents, topics,<br/>scopes, availability"]
@@ -535,7 +535,7 @@ sequenceDiagram
     participant X as extract_all
     participant DB as data/kb.db
     participant POOL as thread pool
-    participant PI as pi -p
+    participant PI as omp -p or pi -p
     participant M as Claude
     CLI->>X: sources, domain, system prompt, model
     loop each source, one after another
@@ -562,11 +562,16 @@ sequenceDiagram
     X-->>CLI: one report per source
 ```
 
-`pi` runs as `pi -p --no-session --no-tools --no-extensions --no-skills
---no-prompt-templates --no-context-files --no-themes --no-approve --thinking
-off`, so only the prompt and the section reach the model. The one extension
-loaded is `@gotgenes/pi-anthropic-auth` when installed (`KB_PI_EXTENSIONS`
-replaces the list); `KB_PI_PREFIX` wraps the command, for example in a sandbox.
+`KB_PI_COMMAND` (`omp` by default, or `pi`) picks the agent CLI, matched by
+its file name. `omp` runs as `omp -p --no-session --no-tools --no-extensions
+--no-skills --no-rules --no-lsp --no-title --thinking off --config
+src/kb/omp-extract.yml`; the overlay disables every discovery source, as omp
+has no `--no-context-files`. `pi` runs as `pi -p --no-session --no-tools
+--no-extensions --no-skills --no-prompt-templates --no-context-files
+--no-themes --no-approve --thinking off` and loads
+`@gotgenes/pi-anthropic-auth` when installed. `KB_PI_EXTENSIONS` replaces the
+extension list for either; `KB_PI_PREFIX` wraps the command, for example in a
+sandbox. An unknown `KB_PI_COMMAND` fails every call.
 Setting `KB_PI_PREFIX=false` makes every model call fail, which proves a run is
 served entirely from the cache.
 

@@ -114,10 +114,11 @@ def main(argv: list[str] | None = None) -> int:
     cmd = commands.add_parser(
         "extract",
         parents=[registry],
-        help="extract statements from parsed sections with Claude (pi -p)",
+        help="extract statements from parsed sections with Claude (omp -p or pi -p)",
         description="Send every section of the current version of each source (or those given with --source) "
-        "to Claude through the local pi login (pi -p, no tools or extensions except pi-anthropic-auth when "
-        "installed, which an Anthropic subscription login needs; KB_PI_EXTENSIONS overrides that list, "
+        "to Claude through the local login of an agent CLI (KB_PI_COMMAND: omp, the default, or pi; print mode "
+        "with no tools, extensions or context files; pi loads pi-anthropic-auth when installed, which an "
+        "Anthropic subscription login needs; KB_PI_EXTENSIONS overrides the extension list, "
         "KB_PI_PREFIX wraps the command, e.g. in a sandbox) and store the statements whose quote appears "
         "verbatim in the section. The system prompt is the --prompt file followed by the modalities and topics "
         "of the domain. Outputs are cached per prompt, model and section, so re-runs only call the model for new "

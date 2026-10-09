@@ -386,7 +386,7 @@ What the encryption does and does not do:
 2. `kb fetch` downloads each source and stores each distinct content as a new
    version; `kb parse` splits the current version into sections on the
    document's own numbering; `kb extract` sends each section to Claude (through
-   the local `pi` login) and keeps a statement only if its quote is an exact
+   the local `omp` or `pi` login) and keeps a statement only if its quote is an exact
    substring of the section.
 3. Everything lands in one SQLite file, `data/kb.db`. Plain tables are the
    source of truth (`src/kb/schema.sql`); the full-text and vector indexes are
@@ -412,7 +412,7 @@ kb fetch --source ID # one source (repeatable)
 kb parse             # split current versions into section chunks
 kb parse --source ID --sample 3   # spot-check three random chunks
 kb links ID          # links in a source's current version, to pick new sources
-kb extract --source ID            # statements via Claude (pi -p)
+kb extract --source ID            # statements via Claude (omp -p or pi -p)
 kb extract --matching '(?i)taper' # only sections whose text matches
 kb index             # full-text index and embeddings (downloads bge-m3 once)
 kb eval              # golden-set hit rate
@@ -564,14 +564,25 @@ sqlite3 data/kb.db "DELETE FROM statement_topics WHERE statement_id IN
 ## Statement extraction
 
 `kb extract` sends each section (preamble chunks excluded) to Claude through
-the local `pi` login: `pi -p` with tools, extensions, skills and context files
-off and stdin closed, so nothing but the prompt and the section reaches the
-model. The one exception is `@gotgenes/pi-anthropic-auth`, loaded with `-e`
-when installed: an Anthropic subscription (OAuth) login rejects requests
-without it as a third-party app. `KB_PI_EXTENSIONS` (paths joined with `:`,
-empty for none) replaces that list. The default model is
+the local login of an agent CLI, `omp` by default. `KB_PI_COMMAND` picks the
+CLI: `omp` or `pi`, or a path to either. Each call runs in print mode with
+tools, extensions, skills and context files off and stdin closed, so nothing
+but the prompt and the section reaches the model:
+
+- `omp -p` has no switch for context files, so kb passes it the settings
+  overlay `src/kb/omp-extract.yml` (`--config`), which disables every
+  discovery source (`AGENTS.md`, `CLAUDE.md`, rules, MCP servers, plugins) and
+  memory, advisor and stream rules. omp still adds a short footer naming the
+  OS, model, date and working directory.
+- `pi -p` loads one extension, `@gotgenes/pi-anthropic-auth`, when installed:
+  an Anthropic subscription (OAuth) login rejects requests without it as a
+  third-party app. omp signs in to Anthropic itself.
+
+`KB_PI_EXTENSIONS` (paths joined with `:`, empty for none) replaces the
+extension list for either CLI. The default model is
 `anthropic/claude-sonnet-5` (`--model` to change); `KB_PI_PREFIX` wraps the
-command, for example in a sandbox.
+command, for example in a sandbox. The extraction cache is keyed by prompt,
+model and section, not by CLI, so switching CLI reuses every cached output.
 
 The system prompt is `prompts/extract.md` followed by the modalities and topics
 from `domain.yaml`; each message names the document, its publisher and scope,
