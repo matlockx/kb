@@ -15,7 +15,9 @@ STRING_FIELDS = ("id", "publisher", "title", "url", "language", "doc_type")
 PATTERN_FIELDS = ("section_pattern", "chapter_pattern", "body_start", "body_end", "skip_sections")
 LABEL_FIELDS = ("chapter_label", "first_chapter", "section_label")
 OPTIONAL_FIELDS = ("scope", "translation_of", "extract_note")
-ALL_FIELDS = frozenset({*STRING_FIELDS, *PATTERN_FIELDS, *LABEL_FIELDS, *OPTIONAL_FIELDS, "tags", "skip_classes"})
+ALL_FIELDS = frozenset(
+    {*STRING_FIELDS, *PATTERN_FIELDS, *LABEL_FIELDS, *OPTIONAL_FIELDS, "tags", "skip_classes", "drop_preamble"}
+)
 ID_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 LANGUAGE_RE = re.compile(r"[a-z]{2}")
 
@@ -38,6 +40,7 @@ class Source:
     section_label: str | None = None  # re.Match.expand template for section refs, e.g. "\\g<num> §"
     skip_sections: str | None = None  # regex matched at the start of a section ref; extraction skips those sections
     skip_classes: tuple[str, ...] = ()  # HTML class names whose elements, content included, parse leaves out
+    drop_preamble: bool = False  # parse stores no preamble, for one window of a document another source also covers
     scope: str | None = None  # id in scopes.yaml; set exactly when the domain has scopes
     translation_of: str | None = None  # id of the source this one translates; that original is the binding text
     extract_note: str | None = None  # one line added to every extraction message of this source
@@ -72,6 +75,7 @@ def load(path: Path, domain: Domain) -> list[Source]:
                 **{k: entry.get(k) for k in (*PATTERN_FIELDS, "chapter_label", "section_label", *OPTIONAL_FIELDS)},
                 first_chapter=entry.get("first_chapter", ""),
                 skip_classes=tuple(entry.get("skip_classes", ())),
+                drop_preamble=entry.get("drop_preamble", False),
             )
         )
 
@@ -143,6 +147,10 @@ def _entry_problems(entry: dict[object, object], domain: Domain) -> list[str]:
         for k in LABEL_FIELDS
         if k in entry and (not isinstance(entry[k], str) or not entry[k].strip())
     ]
+    if "drop_preamble" in entry and not isinstance(entry["drop_preamble"], bool):
+        problems.append("drop_preamble must be true or false")
+    elif entry.get("drop_preamble") and "body_start" not in entry:
+        problems.append("drop_preamble needs a body_start")
     if any(k in entry for k in ("chapter_label", "first_chapter")) and "chapter_pattern" not in entry:
         problems.append("chapter_label and first_chapter need a chapter_pattern")
     if "section_label" in entry and "section_pattern" not in entry:

@@ -498,7 +498,7 @@ The XML readers mark each section start themselves:
 | Root element | Source | Section refs |
 |---|---|---|
 | `Dokument` | LexDania, retsinformation.dk | `§ 4` |
-| `Legislation` | CLML, legislation.gov.uk | `s. 65`, `Sch. 18 para. 9` |
+| `Legislation` | CLML, legislation.gov.uk | `s. 65`, `Sch. 18 para. 9`; a group without numbered paragraphs, such as a Schedule's notes, by its title: `Sch. 9 Notes` |
 | `toestand` | BWB, wetten.overheid.nl | `Artikel 1`; repealed articles dropped |
 | `akomaNtoso` | Akoma Ntoso, Finlex and Normattiva | the article number |
 | `response` | BOE | the article title, latest version; `Anexo 3.1` |
@@ -517,6 +517,7 @@ flowchart TD
     M1 & M2 & M3 & M4 --> C4["walk the blocks: chapter_pattern prefixes refs,<br/>a heading stack builds heading_path,<br/>headings travel with the next section,<br/>text before the first ref is the preamble"]
     C4 --> C5["repeated refs get (2), (3), ..."]
     C5 --> C6["sections over 12 000 characters<br/>split into (part n)"]
+    C6 --> C7["drop_preamble: the preamble chunks<br/>are not stored"]
 ```
 
 Patterns see headings in Markdown form (`## 1. Introduction`) and quoted lines

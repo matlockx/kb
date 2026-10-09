@@ -535,7 +535,10 @@ HTML headings in Markdown form (`## 1. Introduction`), and lines inside a
 `<blockquote>` prefixed with `> `, so `^\d+\.$` skips paragraph numbers a
 judgment quotes from another judgment. `skip_sections`, a
 regex matched at the start of a section ref, keeps those sections searchable
-but out of extraction. `skip_classes`, a list of HTML class names, drops every
+but out of extraction. `drop_preamble: true` (with `body_start`) stores no
+preamble at all, for a source that is one window of a document another source
+also covers, so the text outside the window is not indexed twice.
+`skip_classes`, a list of HTML class names, drops every
 element carrying one of them, content included, before patterns run; on
 legislation.gov.uk, `[LegCommentaryLink]` removes the amendment markers glued
 to section numbers (`X1180` becomes `180`). Sources without a pattern fall back

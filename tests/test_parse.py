@@ -330,6 +330,14 @@ def test_parse_replaces_chunks_of_the_current_version(conn: sqlite3.Connection, 
     assert rows[0][5] != rows[1][5]
 
 
+def test_drop_preamble_stores_only_the_body_window(tmp_path: Path) -> None:
+    path = tmp_path / "doc.html"
+    path.write_text("<body><p>Act text</p><p>FIFTH SCHEDULE</p><p>§ 9. Lotteries.</p></body>", encoding="utf-8")
+    window = dataclasses.replace(SOURCE, body_start="^FIFTH SCHEDULE$")
+    assert refs(parse.sections_of(path, "text/html", window)) == ["(preamble)", "§ 9"]
+    assert refs(parse.sections_of(path, "text/html", dataclasses.replace(window, drop_preamble=True))) == ["§ 9"]
+
+
 def test_parse_failures_leave_chunks_untouched(conn: sqlite3.Connection, tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     assert parse.parse_all(conn, [SOURCE], raw)[0].error == "not fetched yet"
