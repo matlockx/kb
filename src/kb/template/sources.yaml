@@ -12,6 +12,7 @@
 # Optional parse settings, see `kb parse --help`:
 #   section_pattern, chapter_pattern  regexes with a (?P<ref>...) group
 #   body_start, body_end              regexes for the first body line and the first line after it
+#   drop_preamble                     true: store nothing before body_start (one window of a shared document)
 #   section_label, chapter_label      re.Match.expand templates rewriting refs
 #   first_chapter                     ref prefix before chapter_pattern first matches
 #   skip_sections                     regex on refs that extraction skips (still searchable)

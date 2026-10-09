@@ -128,6 +128,20 @@ def test_clml_marks_sections_and_schedule_paragraphs() -> None:
     ]
 
 
+CLML_NOTES = """<?xml version="1.0" encoding="UTF-8"?>
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation"><Primary><Body>
+<Schedule><Number>Schedule 9</Number><P1><Pnumber>2</Pnumber><Text>The granting of a right to a lottery.</Text></P1>
+<P1group><Title><Emphasis>Notes:</Emphasis></Title><P><Text/>
+<P2><Pnumber>2</Pnumber><P2para><Text>“Game of chance” does not include a sport.</Text></P2para></P2></P></P1group>
+</Schedule></Body></Primary></Legislation>"""
+
+
+def test_clml_keeps_a_group_without_p1_as_its_own_section() -> None:
+    assert extract.from_xml(CLML_NOTES.encode())[-1] == Block(
+        "Notes: (2) “Game of chance” does not include a sport.", ref="Sch. 9 Notes"
+    )
+
+
 BWB = """<?xml version="1.0" encoding="UTF-8"?><toestand><wetgeving><wet-besluit><wettekst>
 <hoofdstuk><kop><label>Hoofdstuk</label><nr>2</nr><titel>De vergunning</titel></kop>
 <artikel status="goed"><kop><label>Artikel</label><nr>2.1</nr></kop><meta-data><jcis><jci>x</jci></jcis></meta-data>

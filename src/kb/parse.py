@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from kb.chunk import Section, split
+from kb.chunk import PREAMBLE, Section, split
 from kb.extract import extract
 from kb.sources import Source
 
@@ -36,7 +36,7 @@ def current_version(conn: sqlite3.Connection, document_id: str) -> tuple[str, st
 
 def sections_of(path: Path, content_type: str | None, source: Source) -> list[Section]:
     """Split one stored download into the sections parse stores for it."""
-    return split(
+    sections = split(
         extract(path, content_type, source.skip_classes),
         source.section_pattern,
         source.chapter_pattern,
@@ -46,6 +46,7 @@ def sections_of(path: Path, content_type: str | None, source: Source) -> list[Se
         source.body_end,
         source.section_label,
     )
+    return [s for s in sections if not s.ref.startswith(PREAMBLE)] if source.drop_preamble else sections
 
 
 def parse_all(conn: sqlite3.Connection, sources: Iterable[Source], raw_dir: Path) -> list[Parsed]:

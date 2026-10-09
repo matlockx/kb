@@ -90,6 +90,8 @@ def test_valid_entries_load(tmp_path: Path) -> None:
         ({"section_pattern": r"^(?P<ref>\d+)", "section_label": r"\q"}, "section_label does not fit section_pattern"),
         ({"chapter_pattern": r"^(?P<ref>\d+)", "chapter_label": r"\3"}, "chapter_label does not fit chapter_pattern"),
         ({"chapter_pattern": "^(?P<ref>X)$", "first_chapter": " "}, "first_chapter must be a non-empty string"),
+        ({"drop_preamble": "yes", "body_start": "^1$"}, "drop_preamble must be true or false"),
+        ({"drop_preamble": True}, "drop_preamble needs a body_start"),
     ],
 )
 def test_entry_rejected(tmp_path: Path, change: dict[str, object], message: str) -> None:

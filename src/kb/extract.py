@@ -448,6 +448,12 @@ def _clml(root: ET.Element) -> list[Block]:
                 blocks.append(Block(text, level=3))
         elif name == "P1group":
             title = _text(next((c for c in node if _local(c.tag) == "Title"), node), skip)
+            if not any(_local(c.tag) == "P1" for c in node.iter()):
+                # DEV-NOTE: a group of P2s with no P1, such as the Notes closing each VATA 1994 Sch. 9 Group, holds
+                # definitions; walking into it would drop the text, as only P1 emits a block.
+                base = "" if prefix == "s." else prefix.removesuffix(" para.")
+                blocks.append(Block(_text(node, skip), ref=f"{base} {title.rstrip(':')}".strip() or None))
+                return
         elif name == "P1":
             number = next((c for c in node if _local(c.tag) == "Pnumber"), None)
             ref = f"{prefix} {_text(number, skip)}" if number is not None else None
