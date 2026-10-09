@@ -1,0 +1,29 @@
+# omp settings overlay for kb's stateless extraction calls (passed with --config). It turns off every
+# discovery source, so no AGENTS.md, CLAUDE.md, rules, MCP server instructions or plugins reach the model,
+# and the features that add text to a turn. omp still adds its <project-context> footer (OS, model, date,
+# working directory) and a short completion reminder; neither can be switched off.
+disabledProviders:
+  - native
+  - omp-plugins
+  - claude
+  - agent-plugins
+  - codex
+  - agents
+  - claude-plugins
+  - gemini
+  - opencode
+  - cursor
+  - windsurf
+  - cline
+  - github
+  - vscode
+  - agents-md
+  - mcp-json
+  - ssh-json
+  - builtin-defaults
+ttsr:
+  enabled: false
+memory:
+  backend: off
+advisor:
+  enabled: false

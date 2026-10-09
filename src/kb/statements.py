@@ -1,4 +1,5 @@
-"""Extract structured statements from chunks with Claude (through `pi -p`), keeping only verbatim quotes."""
+"""Extract structured statements from chunks with Claude (through `omp -p` or `pi -p`), keeping only verbatim
+quotes."""
 
 import hashlib
 import json
@@ -23,13 +24,25 @@ DEFAULT_PROMPT = Path("prompts/extract.md")
 MAX_QUOTE_CHARS = 1_000  # the prompt asks for at most 600; long sentences may run over
 CALL_TIMEOUT_S = 300
 RETRY_DELAY_S = 10.0
-PI_FLAGS = (
-    "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates",
-    "--no-context-files", "--no-themes", "--no-approve", "--thinking", "off",
-)  # fmt: skip
+DEFAULT_COMMAND = "omp"
+OMP_CONFIG = Path(__file__).with_name("omp-extract.yml")
+# Flags per agent CLI (KB_PI_COMMAND, matched by its file name): one stateless call, no tools, extensions,
+# skills or discovered context. omp has no switch for context files, so its overlay disables every discovery
+# source instead.
+RUNNER_FLAGS = {
+    "omp": (
+        "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-rules", "--no-lsp",
+        "--no-title", "--thinking", "off", "--config", str(OMP_CONFIG),
+    ),
+    "pi": (
+        "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates",
+        "--no-context-files", "--no-themes", "--no-approve", "--thinking", "off",
+    ),
+}  # fmt: skip
 
-# Extensions loaded despite --no-extensions. pi-anthropic-auth shapes requests so an Anthropic subscription
+# pi extension loaded despite --no-extensions. pi-anthropic-auth shapes requests so an Anthropic subscription
 # (OAuth) login accepts them; without it they are rejected as a third-party app ("draw from extra usage").
+# omp signs in to Anthropic itself and needs no extension.
 ANTHROPIC_AUTH = Path.home() / ".pi/agent/npm/node_modules/@gotgenes/pi-anthropic-auth"
 
 Call = Callable[[str, str, str], str]  # (system prompt, message, model) -> raw model output
@@ -104,26 +117,33 @@ def message(source: Source, section_ref: str, heading_path: list[str], text: str
 
 
 def call_pi(system: str, text: str, model: str) -> str:
-    """One stateless model call through the local pi login; no tools, extensions or context files."""
+    """One stateless model call through the local agent CLI login (KB_PI_COMMAND, omp or pi; default omp); no
+    tools, extensions or context files."""
+    command_name = os.environ.get("KB_PI_COMMAND") or DEFAULT_COMMAND
+    runner = Path(command_name).name
+    flags = RUNNER_FLAGS.get(runner)
+    if flags is None:
+        raise ExtractionError(f"KB_PI_COMMAND {command_name!r} is not one of {sorted(RUNNER_FLAGS)}")
     prefix = shlex.split(os.environ.get("KB_PI_PREFIX", ""))
-    extensions = [arg for path in pi_extensions() for arg in ("-e", path)]  # pi rejects "-e=path"
-    command = [*prefix, "pi", *PI_FLAGS, *extensions, "--model", model, "--system-prompt", system, text]
-    # DEV-NOTE: pi -p reads piped stdin as extra prompt text; without DEVNULL it waits forever under a non-TTY
-    # parent (agents, cron, CI) until CALL_TIMEOUT_S.
+    extensions = [arg for path in pi_extensions(runner) for arg in ("-e", path)]  # pi rejects "-e=path"
+    command = [*prefix, command_name, *flags, *extensions, "--model", model, "--system-prompt", system, text]
+    # DEV-NOTE: pi -p and omp -p read piped stdin as extra prompt text; without DEVNULL they wait forever under a
+    # non-TTY parent (agents, cron, CI) until CALL_TIMEOUT_S.
     result = subprocess.run(  # noqa: S603
         command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CALL_TIMEOUT_S, check=False
     )
     if result.returncode != 0:
-        raise ExtractionError(f"pi exited {result.returncode}: {result.stderr.strip()[-300:]}")
+        raise ExtractionError(f"{runner} exited {result.returncode}: {result.stderr.strip()[-300:]}")
     return result.stdout
 
 
-def pi_extensions() -> list[str]:
-    """KB_PI_EXTENSIONS (paths joined with os.pathsep; empty for none), else pi-anthropic-auth if installed."""
+def pi_extensions(runner: str) -> list[str]:
+    """KB_PI_EXTENSIONS (paths joined with os.pathsep; empty for none), else pi-anthropic-auth if the runner is
+    pi and the extension is installed."""
     configured = os.environ.get("KB_PI_EXTENSIONS")
     if configured is not None:
         return [p for p in configured.split(os.pathsep) if p]
-    return [str(ANTHROPIC_AUTH)] if ANTHROPIC_AUTH.is_dir() else []
+    return [str(ANTHROPIC_AUTH)] if runner == "pi" and ANTHROPIC_AUTH.is_dir() else []
 
 
 def parse_output(raw: str) -> list[object]:

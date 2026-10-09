@@ -281,16 +281,17 @@ def test_cli_extract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: py
 def test_pi_extensions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KB_PI_EXTENSIONS", raising=False)
     monkeypatch.setattr(statements, "ANTHROPIC_AUTH", tmp_path / "missing")
-    assert statements.pi_extensions() == []
+    assert statements.pi_extensions("pi") == []
     monkeypatch.setattr(statements, "ANTHROPIC_AUTH", tmp_path)
-    assert statements.pi_extensions() == [str(tmp_path)]
+    assert statements.pi_extensions("pi") == [str(tmp_path)]
+    assert statements.pi_extensions("omp") == []  # omp signs in to Anthropic itself
     monkeypatch.setenv("KB_PI_EXTENSIONS", "")
-    assert statements.pi_extensions() == []
+    assert statements.pi_extensions("pi") == []
     monkeypatch.setenv("KB_PI_EXTENSIONS", f"/a{os.pathsep}/b")
-    assert statements.pi_extensions() == ["/a", "/b"]
+    assert statements.pi_extensions("omp") == ["/a", "/b"]
 
 
-def test_call_pi_passes_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+def fake_runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], dict[str, object]]]:
     seen: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -298,14 +299,43 @@ def test_call_pi_passes_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
         return subprocess.CompletedProcess(command, 0, '{"statements": []}', "")
 
     monkeypatch.delenv("KB_PI_PREFIX", raising=False)
-    monkeypatch.setenv("KB_PI_EXTENSIONS", "/ext/auth")
     monkeypatch.setattr(statements.subprocess, "run", fake_run)
+    return seen
+
+
+def test_call_pi_passes_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = fake_runs(monkeypatch)
+    monkeypatch.setenv("KB_PI_COMMAND", "pi")
+    monkeypatch.setenv("KB_PI_EXTENSIONS", "/ext/auth")
     assert statements.call_pi("sys", "msg", "m") == '{"statements": []}'
     [(command, kwargs)] = seen
     assert kwargs["stdin"] is subprocess.DEVNULL  # pi -p blocks reading an inherited non-TTY stdin
-    assert "--no-extensions" in command
+    assert command[0] == "pi" and "--no-context-files" in command
     assert command[command.index("-e") + 1] == "/ext/auth"
     assert command[-3:] == ["--system-prompt", "sys", "msg"]
+
+
+def test_call_pi_defaults_to_omp_with_discovery_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = fake_runs(monkeypatch)
+    monkeypatch.delenv("KB_PI_COMMAND", raising=False)
+    monkeypatch.delenv("KB_PI_EXTENSIONS", raising=False)
+    statements.call_pi("sys", "msg", "m")
+    [(command, kwargs)] = seen
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert command[0] == "omp" and "-e" not in command
+    overlay = yaml.safe_load(Path(command[command.index("--config") + 1]).read_text(encoding="utf-8"))
+    assert {"native", "agents-md", "claude", "mcp-json"} <= set(overlay["disabledProviders"])  # no AGENTS.md, MCP
+    monkeypatch.setenv("KB_PI_COMMAND", "/opt/homebrew/bin/omp")  # a path selects flags by its file name
+    statements.call_pi("sys", "msg", "m")
+    assert seen[-1][0][0] == "/opt/homebrew/bin/omp" and "--config" in seen[-1][0]
+
+
+def test_call_pi_rejects_an_unknown_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = fake_runs(monkeypatch)
+    monkeypatch.setenv("KB_PI_COMMAND", "claude")
+    with pytest.raises(statements.ExtractionError, match="KB_PI_COMMAND 'claude'"):
+        statements.call_pi("sys", "msg", "m")
+    assert seen == []
 
 
 def test_message() -> None:
