@@ -3,6 +3,7 @@
 import json
 import re
 import sqlite3
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -39,13 +40,17 @@ class QueryError(ValueError):
 
 @dataclass
 class Searcher:
-    """Holds the embedding model and vector matrices between calls; reloads vectors when the database changes."""
+    """Holds the embedding model and vector matrices between calls; reloads vectors when the database changes.
+
+    embed is safe to call from several threads: the model is loaded once and runs one embedding at a time.
+    """
 
     embed_loader: Callable[[], Embed]
     model: str = EMBED_MODEL
     _embed: Embed | None = None
     _vectors: dict[str, tuple[list[str], np.ndarray]] = field(default_factory=dict)
     _stamp: tuple[int, int] | None = None
+    _embed_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def vectors(self, conn: sqlite3.Connection, kind: str) -> tuple[list[str], np.ndarray]:
         # INSERT OR REPLACE gives a re-embedded row a new rowid, so (count, max rowid) changes on every re-index.
@@ -63,9 +68,13 @@ class Searcher:
         return self._vectors[kind]
 
     def embed(self, text: str) -> np.ndarray:
-        if self._embed is None:
-            self._embed = self.embed_loader()
-        return self._embed([text])[0]
+        # DEV-NOTE: the MCP SDK runs sync tools on worker threads. Without this lock, concurrent first searches each
+        # loaded their own copy of the model (about 2 GB each on MPS) and concurrent MPS forward passes hung the
+        # server; 14 agents searching at once grew one server to 23.6 GB and took the machine down (2026-10-17).
+        with self._embed_lock:
+            if self._embed is None:
+                self._embed = self.embed_loader()
+            return self._embed([text])[0]
 
 
 def _fts_query(text: str, drop: frozenset[str] = frozenset()) -> str | None:

@@ -5,7 +5,10 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -138,6 +141,40 @@ def test_search_errors_and_notes(conn: sqlite3.Connection, searcher: search.Sear
     conn.execute("DROP TABLE chunks_fts")
     with pytest.raises(search.QueryError, match="run `kb index`"):
         search.search(conn, searcher, DOMAIN, "post-market")
+
+
+def test_searcher_loads_the_model_once_and_embeds_one_call_at_a_time() -> None:
+    loads, active, peak = 0, 0, 0
+    count = threading.Lock()
+
+    def slow_embed(texts: Sequence[str]) -> np.ndarray:
+        nonlocal active, peak
+        with count:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.02)
+        with count:
+            active -= 1
+        return fake_embed(texts)
+
+    def slow_loader() -> search.Embed:
+        nonlocal loads
+        with count:
+            loads += 1
+        time.sleep(0.1)  # a model load is slow, so concurrent first calls all find no model yet
+        return slow_embed
+
+    searcher = search.Searcher(slow_loader)
+    start = threading.Barrier(8)
+
+    def call(i: int) -> np.ndarray:
+        start.wait()
+        return searcher.embed(f"query {i}")
+
+    with ThreadPoolExecutor(8) as pool:
+        vectors = list(pool.map(call, range(8)))
+    assert (loads, peak) == (1, 1)
+    assert np.allclose(vectors[3], fake_embed(["query 3"])[0])
 
 
 def test_get_section_joins_parts_and_suggests_refs(conn: sqlite3.Connection) -> None:
