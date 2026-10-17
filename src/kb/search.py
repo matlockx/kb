@@ -42,7 +42,8 @@ class QueryError(ValueError):
 class Searcher:
     """Holds the embedding model and vector matrices between calls; reloads vectors when the database changes.
 
-    embed is safe to call from several threads: the model is loaded once and runs one embedding at a time.
+    embed and vectors are safe to call from several threads: the model is loaded once and runs one embedding at a
+    time, and each vector matrix is read from the database once per index state.
     """
 
     embed_loader: Callable[[], Embed]
@@ -51,21 +52,25 @@ class Searcher:
     _vectors: dict[str, tuple[list[str], np.ndarray]] = field(default_factory=dict)
     _stamp: tuple[int, int] | None = None
     _embed_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _vectors_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def vectors(self, conn: sqlite3.Connection, kind: str) -> tuple[list[str], np.ndarray]:
         # INSERT OR REPLACE gives a re-embedded row a new rowid, so (count, max rowid) changes on every re-index.
         stamp = conn.execute(
             "SELECT count(*), coalesce(max(rowid), 0) FROM vectors WHERE model = ?", (self.model,)
         ).fetchone()
-        if stamp != self._stamp:
-            self._vectors, self._stamp = {}, stamp
-        if kind not in self._vectors:
-            rows = conn.execute(
-                "SELECT item_id, vector FROM vectors WHERE kind = ? AND model = ?", (kind, self.model)
-            ).fetchall()
-            matrix = np.vstack([from_blob(v) for _, v in rows]) if rows else np.zeros((0, 1), dtype="<f4")
-            self._vectors[kind] = ([i for i, _ in rows], matrix)
-        return self._vectors[kind]
+        # DEV-NOTE: without the lock, a thread resetting the cache for a new stamp (or two first calls racing) could
+        # drop the entry another thread had just filled, so that thread's lookup raised KeyError.
+        with self._vectors_lock:
+            if stamp != self._stamp:
+                self._vectors, self._stamp = {}, stamp
+            if kind not in self._vectors:
+                rows = conn.execute(
+                    "SELECT item_id, vector FROM vectors WHERE kind = ? AND model = ?", (kind, self.model)
+                ).fetchall()
+                matrix = np.vstack([from_blob(v) for _, v in rows]) if rows else np.zeros((0, 1), dtype="<f4")
+                self._vectors[kind] = ([i for i, _ in rows], matrix)
+            return self._vectors[kind]
 
     def embed(self, text: str) -> np.ndarray:
         # DEV-NOTE: the MCP SDK runs sync tools on worker threads. Without this lock, concurrent first searches each

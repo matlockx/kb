@@ -177,6 +177,43 @@ def test_searcher_loads_the_model_once_and_embeds_one_call_at_a_time() -> None:
     assert np.allclose(vectors[3], fake_embed(["query 3"])[0])
 
 
+@pytest.mark.usefixtures("conn")  # builds kb.db under tmp_path
+def test_searcher_reads_each_vector_matrix_once_under_concurrent_calls(tmp_path: Path) -> None:
+    reads = 0
+    count = threading.Lock()
+
+    class SlowConn:
+        """A connection whose matrix query is slow, so concurrent first calls all find an empty cache."""
+
+        def __init__(self) -> None:
+            self.real = sqlite3.connect(tmp_path / "kb.db")
+
+        def execute(self, sql: str, args: tuple[object, ...] = ()) -> sqlite3.Cursor:
+            nonlocal reads
+            if sql.startswith("SELECT item_id"):
+                with count:
+                    reads += 1
+                time.sleep(0.05)
+            return self.real.execute(sql, args)
+
+    searcher = search.Searcher(lambda: fake_embed)
+    start = threading.Barrier(8)
+
+    def call(_: int) -> int:
+        slow = SlowConn()
+        try:
+            start.wait()
+            ids, _matrix = searcher.vectors(slow, "chunk")  # type: ignore[arg-type]
+            return len(ids)
+        finally:
+            slow.real.close()
+
+    with ThreadPoolExecutor(8) as pool:
+        sizes = list(pool.map(call, range(8)))
+    assert reads == 1
+    assert sizes == [5] * 8
+
+
 def test_get_section_joins_parts_and_suggests_refs(conn: sqlite3.Connection) -> None:
     section = search.get_section(conn, DOMAIN, "gb-code", "code 5.1.1")
     assert section["text"] == "Marketing must be truthful.\nPromotional offers must not target children."
