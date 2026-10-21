@@ -341,6 +341,10 @@ does and compares the checksum with the manifest, so it costs one copy of the
 database per check, and it also turns on after a `kb fetch` that found nothing
 new, because the fetch time is part of the snapshot.
 
+Someone you share a knowledge base with follows
+[`docs/receiving-a-knowledge-base.md`](docs/receiving-a-knowledge-base.md),
+written so that their coding agent can carry it out step by step.
+
 `pull` checks the bundle against the checksum in the manifest, decrypts it,
 writes the database and the configuration files into `~/kbs/NAME` (`--dir`
 for another place), runs `kb index` (downloading the embedding model when it is
